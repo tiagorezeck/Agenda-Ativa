@@ -1,0 +1,6 @@
+{
+  "name": "Sistema de Agendamento, Leads e CRM",
+  "description": "Sistema profissional para gestão de eventos, agendamentos com controle de capacidade, captação de leads, CRM Kanban e integração com Google Sheets e Google Apps Script.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

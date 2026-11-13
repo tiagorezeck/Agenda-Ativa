@@ -1,0 +1,319 @@
+/**
+ * Agenda Ativa — Serviço Cliente DADOS DRIVE v2.0
+ * Comunicação via proxy reverso /api/drive-proxy (Anti-CORS / Anti-Iframe)
+ * Suporta URL configurada no painel (localStorage) OU via variáveis de ambiente no Vercel/Servidor (GAS_WEBAPP_URL).
+ */
+
+export type SyncStatus = 'synced' | 'syncing' | 'error' | 'offline';
+
+export interface DriveConfig {
+  webappUrl: string;
+  apiToken?: string;
+  autoSync: boolean;
+  syncStatus?: SyncStatus;
+  lastSyncTimestamp?: number;
+  spreadsheetUrl?: string;
+  spreadsheetName?: string;
+  exportXlsxUrl?: string;
+  folderPath?: string;
+}
+
+export interface RuntimeConfig {
+  cloudConfigured: boolean;
+  engsegRequired: boolean;
+  engsegEmail: string;
+  loaded: boolean;
+}
+
+export interface DriveFileEntry {
+  id: string;
+  name: string;
+  isRoot: boolean;
+  size: number;
+  lastUpdated: number;
+  url: string;
+}
+
+const DRIVE_CONFIG_KEY = 'AGENDA_ATIVA_DRIVE_CONFIG_V2';
+const LEGACY_GAS_URL_KEY = 'SISTEMA_AGENDAMENTO_GAS_WEBAPP_URL';
+
+const listeners = new Set<(cfg: DriveConfig) => void>();
+const runtimeListeners = new Set<(rt: RuntimeConfig) => void>();
+
+let runtimeConfigCache: RuntimeConfig = {
+  cloudConfigured: Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || '').trim()),
+  engsegRequired: String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
+  engsegEmail: '',
+  loaded: false
+};
+
+export function getRuntimeConfig(): RuntimeConfig {
+  return runtimeConfigCache;
+}
+
+export function subscribeRuntimeConfig(listener: (rt: RuntimeConfig) => void): () => void {
+  runtimeListeners.add(listener);
+  return () => runtimeListeners.delete(listener);
+}
+
+let runtimeFetchPromise: Promise<RuntimeConfig> | null = null;
+
+export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
+  if (runtimeConfigCache.loaded) return runtimeConfigCache;
+  if (runtimeFetchPromise) return runtimeFetchPromise;
+
+  runtimeFetchPromise = (async () => {
+    try {
+      const res = await fetch('/api/runtime-config', { cache: 'no-store' });
+      if (res.ok) {
+        const json = await res.json();
+        runtimeConfigCache = {
+          cloudConfigured:
+            Boolean(json.cloudConfigured) ||
+            Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || '').trim()),
+          engsegRequired:
+            Boolean(json.engsegRequired) ||
+            String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
+          engsegEmail: typeof json.engsegEmail === 'string' ? json.engsegEmail.trim() : '',
+          loaded: true
+        };
+      } else {
+        runtimeConfigCache = { ...runtimeConfigCache, loaded: true };
+      }
+    } catch {
+      runtimeConfigCache = { ...runtimeConfigCache, loaded: true };
+    }
+    runtimeListeners.forEach((fn) => fn(runtimeConfigCache));
+    listeners.forEach((fn) => fn(getDriveConfig()));
+    return runtimeConfigCache;
+  })();
+
+  return runtimeFetchPromise;
+}
+
+export function isCloudActive(): boolean {
+  const cfg = getDriveConfig();
+  return Boolean(
+    cfg.webappUrl.trim() ||
+      (import.meta.env.VITE_GAS_WEBAPP_URL || '').trim() ||
+      runtimeConfigCache.cloudConfigured
+  );
+}
+
+export function getDriveConfig(): DriveConfig {
+  const viteGasUrl = (import.meta.env.VITE_GAS_WEBAPP_URL || '').trim();
+
+  try {
+    const raw = localStorage.getItem(DRIVE_CONFIG_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as DriveConfig;
+      const effectiveUrl =
+        parsed.webappUrl || localStorage.getItem(LEGACY_GAS_URL_KEY) || viteGasUrl || '';
+      const active = Boolean(effectiveUrl || runtimeConfigCache.cloudConfigured);
+      return {
+        webappUrl: effectiveUrl,
+        apiToken: parsed.apiToken || '',
+        autoSync: parsed.autoSync ?? true,
+        syncStatus: active ? (parsed.syncStatus && parsed.syncStatus !== 'offline' ? parsed.syncStatus : 'synced') : 'offline',
+        lastSyncTimestamp: parsed.lastSyncTimestamp,
+        spreadsheetUrl: parsed.spreadsheetUrl,
+        spreadsheetName: parsed.spreadsheetName,
+        exportXlsxUrl: parsed.exportXlsxUrl,
+        folderPath: parsed.folderPath || 'Agenda Ativa/AppDatabase_Data'
+      };
+    }
+  } catch (e) {
+    console.warn('Erro ao ler DriveConfig:', e);
+  }
+
+  const legacyUrl = localStorage.getItem(LEGACY_GAS_URL_KEY) || viteGasUrl || '';
+  const active = Boolean(legacyUrl || runtimeConfigCache.cloudConfigured);
+  return {
+    webappUrl: legacyUrl,
+    apiToken: '',
+    autoSync: true,
+    syncStatus: active ? 'synced' : 'offline',
+    folderPath: 'Agenda Ativa/AppDatabase_Data'
+  };
+}
+
+export function saveDriveConfig(partial: Partial<DriveConfig>): DriveConfig {
+  const current = getDriveConfig();
+  const next: DriveConfig = {
+    ...current,
+    ...partial
+  };
+  if (partial.webappUrl !== undefined) {
+    localStorage.setItem(LEGACY_GAS_URL_KEY, partial.webappUrl.trim());
+    next.webappUrl = partial.webappUrl.trim();
+    if (!next.webappUrl && !runtimeConfigCache.cloudConfigured) {
+      next.syncStatus = 'offline';
+    }
+  }
+  try {
+    localStorage.setItem(DRIVE_CONFIG_KEY, JSON.stringify(next));
+  } catch (e) {
+    console.error('Erro ao salvar DriveConfig:', e);
+  }
+  listeners.forEach((fn) => fn(next));
+  return next;
+}
+
+export function subscribeDriveConfig(listener: (cfg: DriveConfig) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export const executeDriveRequest = async <T = any>(payload: {
+  targetUrl?: string;
+  action: string;
+  data?: any;
+  apiToken?: string;
+  fileName?: string;
+  slug?: string;
+  nocache?: boolean;
+}): Promise<T> => {
+  const res = await fetch('/api/drive-proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.status === 'error' || data.status === 'unauthorized' || data.success === false) {
+    throw new Error(data.message || data.error || `Falha na sincronização (HTTP ${res.status}).`);
+  }
+  return data;
+};
+
+/**
+ * Testar Conexão / Ping (Motor DADOS DRIVE v2.0)
+ */
+export const testDriveConnection = async (url?: string, token?: string) => {
+  const res = await executeDriveRequest({
+    targetUrl: url || undefined,
+    action: 'ping',
+    apiToken: token
+  });
+
+  saveDriveConfig({
+    ...(url ? { webappUrl: url } : {}),
+    ...(token !== undefined ? { apiToken: token } : {}),
+    syncStatus: 'synced',
+    spreadsheetUrl: res.spreadsheetUrl,
+    spreadsheetName: res.spreadsheetName,
+    exportXlsxUrl: res.exportXlsxUrl,
+    folderPath: res.folder || 'Agenda Ativa/AppDatabase_Data'
+  });
+
+  return res;
+};
+
+/**
+ * Sincronizar / Salvar no Google Drive + Batch Sheets
+ */
+export const pushToGoogleDrive = async (url: string | undefined, dbData: any, token?: string) => {
+  saveDriveConfig({ syncStatus: 'syncing' });
+  try {
+    const res = await executeDriveRequest({
+      targetUrl: url || undefined,
+      action: 'save',
+      data: dbData,
+      apiToken: token
+    });
+    saveDriveConfig({
+      syncStatus: 'synced',
+      lastSyncTimestamp: Date.now(),
+      spreadsheetUrl: res.spreadsheetUrl || getDriveConfig().spreadsheetUrl,
+      spreadsheetName: res.spreadsheetName || getDriveConfig().spreadsheetName,
+      exportXlsxUrl: res.exportXlsxUrl || getDriveConfig().exportXlsxUrl
+    });
+    return res;
+  } catch (err) {
+    saveDriveConfig({ syncStatus: 'error' });
+    throw err;
+  }
+};
+
+/**
+ * Puxar dados da Nuvem (Cache <100ms ou Drive JSON)
+ */
+export const fetchFromGoogleDrive = async (
+  url: string | undefined,
+  token?: string,
+  nocache: boolean = false
+) => {
+  saveDriveConfig({ syncStatus: 'syncing' });
+  try {
+    const res = await executeDriveRequest({
+      targetUrl: url || undefined,
+      action: 'get',
+      apiToken: token,
+      nocache
+    });
+    saveDriveConfig({
+      syncStatus: 'synced',
+      lastSyncTimestamp: Date.now()
+    });
+    return res;
+  } catch (err) {
+    saveDriveConfig({ syncStatus: 'error' });
+    throw err;
+  }
+};
+
+/**
+ * Listar arquivos e checkpoints na pasta Agenda Ativa/AppDatabase_Data
+ */
+export const listDriveFiles = async (url?: string, token?: string): Promise<DriveFileEntry[]> => {
+  const res = await executeDriveRequest<{ files: DriveFileEntry[] }>({
+    targetUrl: url || undefined,
+    action: 'list_files',
+    apiToken: token
+  });
+  return res.files || [];
+};
+
+/**
+ * Criar Checkpoint manual no Google Drive
+ */
+export const createDriveCheckpoint = async (url: string | undefined, dbData: any, token?: string) => {
+  return executeDriveRequest({
+    targetUrl: url || undefined,
+    action: 'create_checkpoint',
+    data: dbData,
+    apiToken: token
+  });
+};
+
+/**
+ * Restaurar Checkpoint como database_root.json
+ */
+export const restoreDriveCheckpoint = async (
+  url: string | undefined,
+  fileName: string,
+  token?: string
+) => {
+  return executeDriveRequest({
+    targetUrl: url || undefined,
+    action: 'set_as_root',
+    fileName,
+    apiToken: token
+  });
+};
+
+/**
+ * Configurar ou remover API_SECRET no Apps Script
+ */
+export const configureDriveApiSecret = async (
+  url: string | undefined,
+  newSecret: string,
+  currentToken?: string
+) => {
+  return executeDriveRequest({
+    targetUrl: url || undefined,
+    action: 'SET_API_SECRET',
+    data: { newSecret },
+    apiToken: currentToken
+  });
+};
