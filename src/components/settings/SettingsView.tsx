@@ -717,6 +717,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                 <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1">
                   Tráfego roteado pelo proxy backend <code>/api/drive-proxy</code> (anti-CORS e anti-iframe).
                 </p>
+
+                {gasUrl.includes('/library/') && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-[11px] text-rose-800 dark:text-rose-200">
+                    <strong>⚠️ URL de Biblioteca detectada:</strong> Você colou um link de biblioteca (<code>/macros/library/...</code>). No Apps Script, clique no botão azul <strong>Implantar &gt; Gerenciar implantações</strong> e copie a <strong>URL do aplicativo da Web</strong> (que termina com <code>/exec</code>).
+                  </div>
+                )}
+                {gasUrl.includes('/edit') && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-200">
+                    <strong>⚠️ URL do Editor detectada:</strong> Você colou o link da tela de edição (<code>/edit</code>). No Apps Script, clique em <strong>Implantar &gt; Gerenciar implantações</strong> e copie a <strong>URL do aplicativo da Web</strong> (que termina com <code>/exec</code>).
+                  </div>
+                )}
               </div>
 
               {/* API Secret Opcional */}

@@ -1,3 +1,5 @@
+import { GLOBAL_GAS_CONFIG } from '../src/config/gasConfig';
+
 const GET_ACTIONS = new Set([
   'ping',
   'test',
@@ -8,19 +10,45 @@ const GET_ACTIONS = new Set([
   'get_file'
 ]);
 
-function isAllowedGasUrl(rawUrl: string): boolean {
+function validateGasUrl(rawUrl: string): { valid: boolean; error?: string } {
   try {
     const parsed = new URL(rawUrl);
-    if (parsed.protocol !== 'https:') return false;
+    if (parsed.protocol !== 'https:') {
+      return { valid: false, error: 'A URL deve usar HTTPS.' };
+    }
     const host = parsed.hostname.toLowerCase();
-    return (
+    const isGasHost =
       host === 'script.google.com' ||
       host.endsWith('.script.google.com') ||
       host === 'script.googleusercontent.com' ||
-      host.endsWith('.googleusercontent.com')
-    );
+      host.endsWith('.googleusercontent.com');
+
+    if (!isGasHost) {
+      return {
+        valid: false,
+        error: 'URL inválida. Informe uma URL oficial do Google Apps Script (script.google.com).'
+      };
+    }
+
+    const path = parsed.pathname.toLowerCase();
+    if (path.includes('/library/')) {
+      return {
+        valid: false,
+        error:
+          'Atenção: A URL informada é uma Biblioteca (/macros/library/...). Para conectar, use a "URL do aplicativo da Web" obtida em Implantar > Gerenciar implantações, que termina com "/exec" (exemplo: https://script.google.com/macros/s/AKfycb.../exec).'
+      };
+    }
+    if (path.includes('/edit')) {
+      return {
+        valid: false,
+        error:
+          'Atenção: A URL informada é do editor (/edit). No Apps Script, clique em "Implantar" > "Gerenciar implantações" e copie a "URL do aplicativo da Web", que termina com "/exec".'
+      };
+    }
+
+    return { valid: true };
   } catch {
-    return false;
+    return { valid: false, error: 'URL malformada.' };
   }
 }
 
@@ -42,7 +70,12 @@ export default async function handler(req: any, res: any) {
     }
 
     const params = { ...queryParams, ...bodyParams };
-    const envTargetUrl = (process.env.GAS_WEBAPP_URL || process.env.VITE_GAS_WEBAPP_URL || '').trim();
+    const envTargetUrl = (
+      process.env.GAS_WEBAPP_URL ||
+      process.env.VITE_GAS_WEBAPP_URL ||
+      GLOBAL_GAS_CONFIG.WEBAPP_URL ||
+      ''
+    ).trim();
     const targetUrl = String(params.targetUrl || envTargetUrl || '').trim();
     const action =
       typeof params.action === 'string' && params.action.trim()
@@ -58,12 +91,13 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    if (!isAllowedGasUrl(targetUrl)) {
+    const gasValidation = validateGasUrl(targetUrl);
+    if (!gasValidation.valid) {
       clearTimeout(timeout);
       return res.status(400).json({
         status: 'error',
         statusCode: 400,
-        message: 'URL inválida. Informe uma URL oficial HTTPS do Google Apps Script (script.google.com).'
+        message: gasValidation.error
       });
     }
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { storage } from '../../services/storageService';
 import { BookingSubmissionPayload, BookingSuccessResult } from '../../types/api';
 import {
@@ -57,9 +57,22 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     initialSlug || eventos[0]?.slug || ''
   );
 
+  useEffect(() => {
+    if (initialSlug && initialSlug !== selectedSlug) {
+      setSelectedSlug(initialSlug);
+    }
+  }, [initialSlug]);
+
   const eventoAtual = useMemo(() => {
-    return eventos.find(e => e.slug === selectedSlug || e.id_evento === selectedSlug) || eventos[0];
-  }, [eventos, selectedSlug]);
+    if (selectedSlug) {
+      const match = eventos.find(e => e.slug === selectedSlug || e.id_evento === selectedSlug);
+      if (match) return match;
+    }
+    if (initialSlug) {
+      return null;
+    }
+    return eventos[0] || null;
+  }, [eventos, selectedSlug, initialSlug]);
 
   // Modo de visualização responsiva para testes rápidos (Notebook, Tablet, Mobile ou Auto)
   const [devicePreview, setDevicePreview] = useState<'auto' | 'notebook' | 'tablet' | 'mobile'>('auto');
@@ -628,12 +641,47 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
 
       {/* Container Adaptável: Notebook / Tablet / Mobile */}
       <div className={`space-y-4 sm:space-y-6 transition-all duration-300 ${containerWidthClass}`}>
-        {/* Header do Evento com Logo do Projeto à Frente do Nome */}
-        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 lg:p-7 shadow-sm space-y-4 transition-colors">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] sm:text-[11px] font-semibold tracking-wider text-orange-600 dark:text-orange-400 uppercase bg-orange-100 dark:bg-orange-950/60 border border-orange-200 dark:border-orange-900/60 px-2.5 py-0.5 rounded-full">
-              Agendamento Online
-            </span>
+        {!eventoAtual ? (
+          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl sm:rounded-3xl p-8 sm:p-12 text-center space-y-4 shadow-sm">
+            <div className="w-12 h-12 rounded-full bg-orange-100 dark:bg-orange-950/60 border border-orange-200 dark:border-orange-800 text-orange-600 dark:text-orange-400 mx-auto flex items-center justify-center">
+              <Calendar className="w-6 h-6 animate-pulse" />
+            </div>
+            <div className="space-y-1">
+              <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
+                Buscando agendamento "{selectedSlug}"...
+              </h2>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md mx-auto">
+                Buscando informações em tempo real no Google Sheets. Se a conexão ainda não foi sincronizada, certifique-se de configurar a URL do Web App no painel.
+              </p>
+            </div>
+            {eventos.length > 0 && (
+              <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-2">
+                <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium">
+                  Eventos atualmente disponíveis:
+                </p>
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {eventos.map((ev) => (
+                    <button
+                      key={ev.id_evento}
+                      type="button"
+                      onClick={() => setSelectedSlug(ev.slug)}
+                      className="px-3 py-1.5 bg-neutral-100 dark:bg-neutral-800 hover:bg-orange-50 dark:hover:bg-orange-950 border border-neutral-200 dark:border-neutral-700 text-xs rounded-lg font-medium text-neutral-800 dark:text-neutral-200 transition-colors cursor-pointer"
+                    >
+                      {ev.nome}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Header do Evento com Logo do Projeto à Frente do Nome */}
+            <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl sm:rounded-3xl p-4 sm:p-6 lg:p-7 shadow-sm space-y-4 transition-colors">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] sm:text-[11px] font-semibold tracking-wider text-orange-600 dark:text-orange-400 uppercase bg-orange-100 dark:bg-orange-950/60 border border-orange-200 dark:border-orange-900/60 px-2.5 py-0.5 rounded-full">
+                  Agendamento Online
+                </span>
             <span className="text-neutral-400 dark:text-neutral-600">·</span>
             <span className="text-xs text-neutral-500 dark:text-neutral-400 flex items-center gap-1">
               <Clock className="w-3.5 h-3.5" />
@@ -1193,6 +1241,8 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
         )}
         </>
         )}
+      </>
+      )}
 
         {/* Rodapé da Página Pública — Dados da Empresa (Cadastrados em Configurações) */}
         <footer className="w-full pt-4 pb-8 sm:pb-12 text-neutral-600 dark:text-neutral-400 text-xs">
