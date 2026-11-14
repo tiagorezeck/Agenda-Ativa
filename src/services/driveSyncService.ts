@@ -1,7 +1,9 @@
+import { GLOBAL_GAS_CONFIG } from '../config/gasConfig';
+
 /**
  * Agenda Ativa — Serviço Cliente DADOS DRIVE v2.0
  * Comunicação via proxy reverso /api/drive-proxy (Anti-CORS / Anti-Iframe)
- * Suporta URL configurada no painel (localStorage) OU via variáveis de ambiente no Vercel/Servidor (GAS_WEBAPP_URL).
+ * Suporta URL configurada no painel (localStorage), GLOBAL_GAS_CONFIG ou variáveis de ambiente.
  */
 
 export type SyncStatus = 'synced' | 'syncing' | 'error' | 'offline';
@@ -41,7 +43,7 @@ const listeners = new Set<(cfg: DriveConfig) => void>();
 const runtimeListeners = new Set<(rt: RuntimeConfig) => void>();
 
 let runtimeConfigCache: RuntimeConfig = {
-  cloudConfigured: Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || '').trim()),
+  cloudConfigured: Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim()),
   engsegRequired: String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
   engsegEmail: '',
   loaded: false
@@ -70,7 +72,7 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
         runtimeConfigCache = {
           cloudConfigured:
             Boolean(json.cloudConfigured) ||
-            Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || '').trim()),
+            Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim()),
           engsegRequired:
             Boolean(json.engsegRequired) ||
             String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
@@ -80,10 +82,13 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
 
         const serverWebappUrl = typeof json.webappUrl === 'string' ? json.webappUrl.trim() : '';
         const serverApiToken = typeof json.apiToken === 'string' ? json.apiToken.trim() : '';
-        if (serverWebappUrl) {
+        const effectiveServerUrl = serverWebappUrl || GLOBAL_GAS_CONFIG.WEBAPP_URL.trim();
+        const effectiveServerToken = serverApiToken || GLOBAL_GAS_CONFIG.API_TOKEN.trim();
+
+        if (effectiveServerUrl) {
           const currentLocal = getDriveConfig();
           if (!currentLocal.webappUrl.trim()) {
-            saveDriveConfig({ webappUrl: serverWebappUrl, ...(serverApiToken ? { apiToken: serverApiToken } : {}) });
+            saveDriveConfig({ webappUrl: effectiveServerUrl, ...(effectiveServerToken ? { apiToken: effectiveServerToken } : {}) });
           }
         }
       } else {
@@ -104,24 +109,27 @@ export function isCloudActive(): boolean {
   const cfg = getDriveConfig();
   return Boolean(
     cfg.webappUrl.trim() ||
+      GLOBAL_GAS_CONFIG.WEBAPP_URL.trim() ||
       (import.meta.env.VITE_GAS_WEBAPP_URL || '').trim() ||
       runtimeConfigCache.cloudConfigured
   );
 }
 
 export function getDriveConfig(): DriveConfig {
-  const viteGasUrl = (import.meta.env.VITE_GAS_WEBAPP_URL || '').trim();
+  const globalGasUrl = (import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim();
+  const globalToken = (GLOBAL_GAS_CONFIG.API_TOKEN || '').trim();
 
   try {
     const raw = localStorage.getItem(DRIVE_CONFIG_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as DriveConfig;
       const effectiveUrl =
-        parsed.webappUrl || localStorage.getItem(LEGACY_GAS_URL_KEY) || viteGasUrl || '';
+        parsed.webappUrl || localStorage.getItem(LEGACY_GAS_URL_KEY) || globalGasUrl || '';
+      const effectiveToken = parsed.apiToken || globalToken || '';
       const active = Boolean(effectiveUrl || runtimeConfigCache.cloudConfigured);
       return {
         webappUrl: effectiveUrl,
-        apiToken: parsed.apiToken || '',
+        apiToken: effectiveToken,
         autoSync: parsed.autoSync ?? true,
         syncStatus: active ? (parsed.syncStatus && parsed.syncStatus !== 'offline' ? parsed.syncStatus : 'synced') : 'offline',
         lastSyncTimestamp: parsed.lastSyncTimestamp,
@@ -135,11 +143,11 @@ export function getDriveConfig(): DriveConfig {
     console.warn('Erro ao ler DriveConfig:', e);
   }
 
-  const legacyUrl = localStorage.getItem(LEGACY_GAS_URL_KEY) || viteGasUrl || '';
+  const legacyUrl = localStorage.getItem(LEGACY_GAS_URL_KEY) || globalGasUrl || '';
   const active = Boolean(legacyUrl || runtimeConfigCache.cloudConfigured);
   return {
     webappUrl: legacyUrl,
-    apiToken: '',
+    apiToken: globalToken,
     autoSync: true,
     syncStatus: active ? 'synced' : 'offline',
     folderPath: 'Agenda Ativa/AppDatabase_Data'

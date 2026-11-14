@@ -115,11 +115,34 @@ async function startServer() {
 
   app.post('/api/server-config', (req: Request, res: Response) => {
     const { webappUrl, apiToken } = req.body || {};
+    const cleanUrl = webappUrl !== undefined ? String(webappUrl).trim() : undefined;
+    const cleanToken = apiToken !== undefined ? String(apiToken).trim() : undefined;
+
     saveServerConfig({
-      ...(webappUrl !== undefined ? { webappUrl: String(webappUrl).trim() } : {}),
-      ...(apiToken !== undefined ? { apiToken: String(apiToken).trim() } : {})
+      ...(cleanUrl !== undefined ? { webappUrl: cleanUrl } : {}),
+      ...(cleanToken !== undefined ? { apiToken: cleanToken } : {})
     });
-    res.json({ status: 'success', message: 'Configuração salva no servidor com sucesso.' });
+
+    try {
+      const currentCfg = loadServerConfig();
+      const finalUrl = currentCfg.webappUrl || '';
+      const finalToken = currentCfg.apiToken || '';
+      const gasConfigContent = `/**
+ * Configuração Global do Google Apps Script (DADOS DRIVE v2.0)
+ * Atualizado automaticamente pelo sistema ao salvar ou testar conexão (Ping).
+ */
+export const GLOBAL_GAS_CONFIG = {
+  WEBAPP_URL: '${finalUrl}',
+  API_TOKEN: '${finalToken}'
+};
+`;
+      const configFilePath = path.join(__dirname, 'src', 'config', 'gasConfig.ts');
+      fs.writeFileSync(configFilePath, gasConfigContent, 'utf-8');
+    } catch (e) {
+      console.warn('Não foi possível atualizar gasConfig.ts automaticamente:', e);
+    }
+
+    res.json({ status: 'success', message: 'Configuração salva e embutida no sistema com sucesso.' });
   });
 
   // Proxy Anti-CORS / Anti-Iframe para Google Apps Script (DADOS DRIVE v2.0)
