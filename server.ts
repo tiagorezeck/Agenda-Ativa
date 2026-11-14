@@ -1,6 +1,7 @@
 import express from 'express';
 import type { Request, Response } from 'express';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
@@ -8,6 +9,30 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const CONFIG_FILE_PATH = path.join(__dirname, 'server-config.json');
+
+function loadServerConfig(): { webappUrl?: string; apiToken?: string } {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      const raw = fs.readFileSync(CONFIG_FILE_PATH, 'utf-8');
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn('Erro ao ler server-config.json:', e);
+  }
+  return {};
+}
+
+function saveServerConfig(cfg: { webappUrl?: string; apiToken?: string }) {
+  try {
+    const current = loadServerConfig();
+    const next = { ...current, ...cfg };
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(next, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Erro ao salvar server-config.json:', e);
+  }
+}
 
 const PORT = Number(process.env.PORT) || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -53,11 +78,17 @@ async function startServer() {
     });
   });
 
-  // Configuração segura de runtime (não expõe URLs nem segredos sensíveis)
+  // Configuração segura de runtime
   app.get('/api/runtime-config', (_req: Request, res: Response) => {
-    const hasServerGasUrl = Boolean(
-      (process.env.GAS_WEBAPP_URL || process.env.VITE_GAS_WEBAPP_URL || '').trim()
-    );
+    const serverCfg = loadServerConfig();
+    const effectiveUrl = (
+      serverCfg.webappUrl ||
+      process.env.GAS_WEBAPP_URL ||
+      process.env.VITE_GAS_WEBAPP_URL ||
+      ''
+    ).trim();
+    const hasServerGasUrl = Boolean(effectiveUrl);
+
     const engsegRequired =
       String(process.env.ENGSEG_REQUIRED || process.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true';
     const engsegEmail = (process.env.ENGSEG_ADMIN_EMAIL || '').trim();
@@ -65,9 +96,30 @@ async function startServer() {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
       cloudConfigured: hasServerGasUrl,
+      webappUrl: effectiveUrl,
+      apiToken: serverCfg.apiToken || process.env.DRIVE_API_SECRET || '',
       engsegRequired,
       engsegEmail
     });
+  });
+
+  // Endpoints de persistência compartilhada da URL do Apps Script
+  app.get('/api/server-config', (_req: Request, res: Response) => {
+    const cfg = loadServerConfig();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      webappUrl: cfg.webappUrl || '',
+      apiToken: cfg.apiToken || ''
+    });
+  });
+
+  app.post('/api/server-config', (req: Request, res: Response) => {
+    const { webappUrl, apiToken } = req.body || {};
+    saveServerConfig({
+      ...(webappUrl !== undefined ? { webappUrl: String(webappUrl).trim() } : {}),
+      ...(apiToken !== undefined ? { apiToken: String(apiToken).trim() } : {})
+    });
+    res.json({ status: 'success', message: 'Configuração salva no servidor com sucesso.' });
   });
 
   // Proxy Anti-CORS / Anti-Iframe para Google Apps Script (DADOS DRIVE v2.0)
@@ -80,7 +132,13 @@ async function startServer() {
       const bodyParams = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
       const params = { ...queryParams, ...bodyParams };
 
-      const envTargetUrl = (process.env.GAS_WEBAPP_URL || process.env.VITE_GAS_WEBAPP_URL || '').trim();
+      const serverCfg = loadServerConfig();
+      const envTargetUrl = (
+        serverCfg.webappUrl ||
+        process.env.GAS_WEBAPP_URL ||
+        process.env.VITE_GAS_WEBAPP_URL ||
+        ''
+      ).trim();
       const targetUrl = String(params.targetUrl || envTargetUrl || '').trim();
       const action = typeof params.action === 'string' && params.action.trim()
         ? params.action.trim()

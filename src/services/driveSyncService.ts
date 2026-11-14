@@ -77,6 +77,15 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
           engsegEmail: typeof json.engsegEmail === 'string' ? json.engsegEmail.trim() : '',
           loaded: true
         };
+
+        const serverWebappUrl = typeof json.webappUrl === 'string' ? json.webappUrl.trim() : '';
+        const serverApiToken = typeof json.apiToken === 'string' ? json.apiToken.trim() : '';
+        if (serverWebappUrl) {
+          const currentLocal = getDriveConfig();
+          if (!currentLocal.webappUrl.trim()) {
+            saveDriveConfig({ webappUrl: serverWebappUrl, ...(serverApiToken ? { apiToken: serverApiToken } : {}) });
+          }
+        }
       } else {
         runtimeConfigCache = { ...runtimeConfigCache, loaded: true };
       }
@@ -155,8 +164,27 @@ export function saveDriveConfig(partial: Partial<DriveConfig>): DriveConfig {
   } catch (e) {
     console.error('Erro ao salvar DriveConfig:', e);
   }
+
+  fetch('/api/server-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      webappUrl: next.webappUrl,
+      apiToken: next.apiToken || ''
+    })
+  }).catch(() => {});
+
   listeners.forEach((fn) => fn(next));
   return next;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === DRIVE_CONFIG_KEY || e.key === LEGACY_GAS_URL_KEY) {
+      const updatedCfg = getDriveConfig();
+      listeners.forEach((fn) => fn(updatedCfg));
+    }
+  });
 }
 
 export function subscribeDriveConfig(listener: (cfg: DriveConfig) => void): () => void {
