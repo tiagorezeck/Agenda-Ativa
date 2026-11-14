@@ -119,7 +119,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     };
   }, []);
 
-  const handleSalvarEmpresa = (e: React.FormEvent) => {
+  const handleSalvarEmpresa = async (e: React.FormEvent) => {
     e.preventDefault();
     storage.updateConfig('EMPRESA_NOME', empresaNome.trim());
     storage.updateConfig('EMPRESA_LOGO', empresaLogo.trim());
@@ -133,6 +133,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       webappUrl: gasUrl.trim(),
       apiToken: apiToken.trim()
     });
+
+    if (gasUrl.trim()) {
+      try {
+        await storage.pullFromCloud(true);
+      } catch {}
+    }
 
     setSalvoMsg(true);
     setTimeout(() => setSalvoMsg(false), 3000);
@@ -155,7 +161,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       saveDriveConfig({ webappUrl: gasUrl.trim(), apiToken: apiToken.trim() });
     }
     const res = await GasApiClient.testConnection(gasUrl.trim() || undefined, apiToken.trim() || undefined);
-    setResultadoTeste(res);
+    if (res.success) {
+      try {
+        await storage.pullFromCloud(true);
+        setResultadoTeste({
+          success: true,
+          message: `${res.message} Dados existentes na planilha carregados com sucesso!`
+        });
+        onDataSynced?.();
+      } catch (pullErr: any) {
+        setResultadoTeste({
+          success: true,
+          message: `${res.message} (Aviso ao puxar dados: ${pullErr.message})`
+        });
+      }
+    } else {
+      setResultadoTeste(res);
+    }
     setTestandoConexao(false);
   };
 
