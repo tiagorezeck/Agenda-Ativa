@@ -16,7 +16,8 @@ import {
   HistoricoCrmEntity,
   LogEntity,
   SlotDisponibilidade,
-  EstagioCrm
+  EstagioCrm,
+  StatusClienteLead
 } from '../types/database';
 import { BookingSubmissionPayload, BookingSuccessResult } from '../types/api';
 import { gerarCodigoAleatorio, normalizarWhatsApp, obterDiaSemanaAbrev } from '../utils/formatters';
@@ -123,6 +124,14 @@ const INITIAL_DATABASE: SheetDatabase = {
       nome: 'Mentoria Comercial Estratégica',
       descricao: 'Sessão de diagnóstico e planejamento para aceleração de vendas e captação de clientes.',
       imagem_url: 'https://images.unsplash.com/photo-1557804506-669a67965ba0?w=180&auto=format&fit=crop&q=80',
+      produto_nome: 'Mentoria Comercial Estratégica (Pacote 90 dias)',
+      produto_valor_mensal: 1000,
+      produto_parcelas: 5,
+      produto_valor: 5000,
+      exibir_produto_publico: true,
+      modo_datas: 'RECORRENTE',
+      recorrencia_ativa: true,
+      datas_especificas: [],
       data_inicio: DATA_HOJE,
       data_fim: DATA_DEPOIS,
       dias_semana: ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'],
@@ -193,6 +202,7 @@ const INITIAL_DATABASE: SheetDatabase = {
       email: 'carlos.mendes@techsolucoes.com',
       empresa: 'Tech Soluções Inovadoras',
       cargo: 'CEO & Fundador',
+      status_cliente: 'LEAD',
       origem_primeiro_evento: 'EVT-001',
       total_agendamentos: 1,
       data_ultimo_agendamento: new Date().toISOString(),
@@ -208,6 +218,7 @@ const INITIAL_DATABASE: SheetDatabase = {
       email: 'juliana.rocha@nexuscorp.com.br',
       empresa: 'Nexus Corp',
       cargo: 'Diretora de Operações',
+      status_cliente: 'LEAD',
       origem_primeiro_evento: 'EVT-001',
       total_agendamentos: 1,
       data_ultimo_agendamento: new Date().toISOString(),
@@ -275,6 +286,9 @@ const INITIAL_DATABASE: SheetDatabase = {
       id_lead: 'LED-0001',
       id_agendamento_origem: 'AGD-202611-0001',
       titulo: 'Atendimento: Carlos Eduardo Mendes (Mentoria Comercial)',
+      produto_nome: 'Mentoria Comercial Estratégica (Pacote 90 dias)',
+      produto_valor_mensal: 1000,
+      produto_parcelas: 5,
       estagio: 'ENTRADA',
       valor_estimado: 5000,
       valor_fechado: 0,
@@ -532,10 +546,27 @@ class StorageService {
     const evento = this.db.eventos.find(e => e.id_evento === idEvento);
     if (!evento) return [];
 
+    const isDatasEspecificas = evento.modo_datas === 'DATAS_ESPECIFICAS';
+    const isRecorrente = Boolean(evento.recorrencia_ativa) || evento.modo_datas === 'RECORRENTE';
+
+    if (isDatasEspecificas) {
+      const listaDatas = Array.isArray(evento.datas_especificas) ? evento.datas_especificas : [];
+      if (!listaDatas.includes(data)) return [];
+    } else {
+      if (evento.data_inicio && data < evento.data_inicio) return [];
+      if (!isRecorrente && evento.data_fim && data > evento.data_fim) return [];
+    }
+
     const diaSemanaAbrev = obterDiaSemanaAbrev(data);
-    const slotsDoEvento = this.db.horarios.filter(
-      h => h.id_evento === idEvento && h.ativo && h.dias_aplicaveis.includes(diaSemanaAbrev)
-    );
+    if (!isDatasEspecificas && Array.isArray(evento.dias_semana) && evento.dias_semana.length > 0) {
+      if (!evento.dias_semana.includes(diaSemanaAbrev)) return [];
+    }
+
+    const slotsDoEvento = this.db.horarios.filter((h) => {
+      if (h.id_evento !== idEvento || !h.ativo) return false;
+      if (isDatasEspecificas) return true;
+      return !Array.isArray(h.dias_aplicaveis) || h.dias_aplicaveis.length === 0 || h.dias_aplicaveis.includes(diaSemanaAbrev);
+    });
 
     return slotsDoEvento.map(slot => {
       // Bloqueios administrativos
@@ -619,11 +650,26 @@ class StorageService {
     const nowIso = new Date().toISOString();
     const whatsappNorm = normalizarWhatsApp(payload.whatsapp);
     const emailNorm = (payload.email || '').trim().toLowerCase();
+    let localNorm = (payload.local || '').trim();
+    if (!localNorm && payload.respostas_customizadas) {
+      const camposEvento = this.db.campos_formulario.filter(c => c.id_evento === evento.id_evento);
+      for (const [cid, val] of Object.entries(payload.respostas_customizadas)) {
+        if (!val || !String(val).trim()) continue;
+        const campo = camposEvento.find(c => c.id_campo === cid);
+        const refTxt = `${campo?.nome_campo || ''} ${campo?.label || ''}`.toLowerCase();
+        if (refTxt.includes('local') || refTxt.includes('escola') || refTxt.includes('bairro')) {
+          localNorm = String(val).trim();
+          break;
+        }
+      }
+    }
 
-    // Desduplicação do Lead
+    // Desduplicação do Lead (ignora leads que estejam na lixeira)
     let lead = this.db.leads.find(
-      l => (whatsappNorm && normalizarWhatsApp(l.whatsapp) === whatsappNorm) ||
+      l => !l.excluido && (
+           (whatsappNorm && normalizarWhatsApp(l.whatsapp) === whatsappNorm) ||
            (emailNorm && (l.email || '').trim().toLowerCase() === emailNorm)
+      )
     );
 
     let idLead = '';
@@ -631,6 +677,7 @@ class StorageService {
       idLead = lead.id_lead;
       lead.nome = payload.nome || lead.nome;
       if (payload.empresa) lead.empresa = payload.empresa;
+      if (localNorm) lead.local = localNorm;
       lead.total_agendamentos += 1;
       lead.data_ultimo_agendamento = nowIso;
       lead.atualizado_em = nowIso;
@@ -642,6 +689,8 @@ class StorageService {
         whatsapp: whatsappNorm,
         email: emailNorm,
         empresa: payload.empresa || '',
+        local: localNorm || undefined,
+        status_cliente: 'LEAD',
         origem_primeiro_evento: evento.id_evento,
         total_agendamentos: 1,
         data_ultimo_agendamento: nowIso,
@@ -687,15 +736,22 @@ class StorageService {
       }
     }
 
-    // Criação Automática da Oportunidade no CRM (Coluna ENTRADA)
+    // Criação Automática da Oportunidade no CRM (Coluna ENTRADA) com Produto, Parcelas & Valor do Evento
     const idOportunidade = `CRM-${gerarCodigoAleatorio(6)}`;
+    const valorMensal = Number(evento.produto_valor_mensal) || 0;
+    const parcelas = Math.max(1, Number(evento.produto_parcelas) || 1);
+    const valorProduto = Number(evento.produto_valor) || (valorMensal > 0 ? valorMensal * parcelas : 0);
+    const nomeProduto = (evento.produto_nome || '').trim();
     const novaOportunidade: CrmOportunidadeEntity = {
       id_oportunidade: idOportunidade,
       id_lead: idLead,
       id_agendamento_origem: idAgendamento,
-      titulo: `Atendimento: ${payload.nome} (${evento.nome})`,
+      titulo: `Atendimento: ${payload.nome} (${nomeProduto || evento.nome})`,
+      produto_nome: nomeProduto || undefined,
+      produto_valor_mensal: valorMensal > 0 ? valorMensal : undefined,
+      produto_parcelas: valorMensal > 0 ? parcelas : undefined,
       estagio: 'ENTRADA',
-      valor_estimado: 0,
+      valor_estimado: valorProduto,
       valor_fechado: 0,
       responsavel_id: evento.responsavel_id || 'USR-001',
       data_proximo_followup: payload.data,
@@ -706,12 +762,18 @@ class StorageService {
     this.db.crm.unshift(novaOportunidade);
 
     // Histórico de CRM
+    const parcelaTxt = valorMensal > 0 && parcelas > 1
+      ? `${parcelas}x de ${valorMensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} = `
+      : '';
+    const produtoInfo = nomeProduto || valorProduto > 0
+      ? ` · Produto: ${nomeProduto || evento.nome} (${parcelaTxt}${valorProduto.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})`
+      : '';
     this.db.historico_crm.unshift({
       id_historico: `HCRM-${gerarCodigoAleatorio(6)}`,
       id_oportunidade: idOportunidade,
       tipo: 'MUDANCA_ESTAGIO',
       estagio_novo: 'ENTRADA',
-      descricao: `Oportunidade gerada automaticamente a partir do agendamento ${protocolo}`,
+      descricao: `Oportunidade gerada automaticamente a partir do agendamento ${protocolo}${produtoInfo}`,
       usuario_id: 'SISTEMA',
       criado_em: nowIso
     });
@@ -1041,6 +1103,22 @@ class StorageService {
   }
 
   // --- Operações de CRM Kanban ---
+  private syncLeadClientStatusFromCrm(idLead: string, estagioAnterior?: EstagioCrm, novoEstagio?: EstagioCrm) {
+    const lead = this.db.leads.find(l => l.id_lead === idLead);
+    if (!lead) return;
+    const temCompraGanha = this.db.crm.some(c => c.id_lead === idLead && c.estagio === 'GANHO');
+    if (temCompraGanha || novoEstagio === 'GANHO') {
+      if (lead.status_cliente !== 'CLIENTE') {
+        lead.status_cliente = 'CLIENTE';
+        lead.atualizado_em = new Date().toISOString();
+        this.log('INFO', 'LEAD_CONVERTED_CLIENT', `Lead ${lead.nome} (${idLead}) promovido automaticamente para CLIENTE.`);
+      }
+    } else if (estagioAnterior === 'GANHO' && novoEstagio) {
+      lead.status_cliente = 'LEAD';
+      lead.atualizado_em = new Date().toISOString();
+    }
+  }
+
   public updateCrmStage(
     idOportunidade: string,
     novoEstagio: EstagioCrm,
@@ -1063,6 +1141,8 @@ class StorageService {
       op.data_fechamento = new Date().toISOString();
     }
 
+    this.syncLeadClientStatusFromCrm(op.id_lead, estagioAnt, novoEstagio);
+
     this.db.historico_crm.unshift({
       id_historico: `HCRM-${gerarCodigoAleatorio(6)}`,
       id_oportunidade: idOportunidade,
@@ -1081,12 +1161,14 @@ class StorageService {
   public saveCrmOpportunity(oportunidade: CrmOportunidadeEntity) {
     const index = this.db.crm.findIndex(c => c.id_oportunidade === oportunidade.id_oportunidade);
     const nowIso = new Date().toISOString();
+    const estagioAnt = index >= 0 ? this.db.crm[index].estagio : undefined;
 
     if (index >= 0) {
       this.db.crm[index] = { ...oportunidade, atualizado_em: nowIso };
     } else {
       this.db.crm.unshift({ ...oportunidade, criado_em: nowIso, atualizado_em: nowIso });
     }
+    this.syncLeadClientStatusFromCrm(oportunidade.id_lead, estagioAnt, oportunidade.estagio);
     this.salvar(this.db);
   }
 
@@ -1121,13 +1203,71 @@ class StorageService {
     return proximoModo;
   }
 
-  // --- Operações de Lead ---
+  // --- Operações de Lead & Lixeira ---
   public updateLead(lead: LeadEntity) {
     const index = this.db.leads.findIndex(l => l.id_lead === lead.id_lead);
     if (index >= 0) {
       this.db.leads[index] = { ...lead, atualizado_em: new Date().toISOString() };
       this.salvar(this.db);
     }
+  }
+
+  public updateLeadClientStatus(idLead: string, novoStatus: StatusClienteLead) {
+    const lead = this.db.leads.find(l => l.id_lead === idLead);
+    if (!lead) return;
+    lead.status_cliente = novoStatus;
+    lead.atualizado_em = new Date().toISOString();
+    this.log('INFO', 'LEAD_STATUS_UPDATED', `Status comercial de ${lead.nome} (${idLead}) alterado para ${novoStatus}.`);
+    this.salvar(this.db);
+  }
+
+  public moveLeadToTrash(idLead: string) {
+    const lead = this.db.leads.find(l => l.id_lead === idLead);
+    if (!lead) return;
+    lead.excluido = true;
+    lead.excluido_em = new Date().toISOString();
+    lead.atualizado_em = new Date().toISOString();
+    this.log('INFO', 'LEAD_MOVED_TO_TRASH', `Lead ${lead.nome} (${idLead}) movido para a lixeira.`);
+    this.salvar(this.db);
+  }
+
+  public restoreLeadFromTrash(idLead: string) {
+    const lead = this.db.leads.find(l => l.id_lead === idLead);
+    if (!lead) return;
+    lead.excluido = false;
+    lead.excluido_em = undefined;
+    lead.atualizado_em = new Date().toISOString();
+    this.log('INFO', 'LEAD_RESTORED', `Lead ${lead.nome} (${idLead}) restaurado da lixeira.`);
+    this.salvar(this.db);
+  }
+
+  private purgeLeadsByIds(idsToPurge: Set<string>) {
+    if (idsToPurge.size === 0) return;
+    const crmIdsToPurge = new Set(
+      this.db.crm.filter(c => idsToPurge.has(c.id_lead)).map(c => c.id_oportunidade)
+    );
+    this.db.leads = this.db.leads.filter(l => !idsToPurge.has(l.id_lead));
+    this.db.agendamentos = this.db.agendamentos.filter(a => !idsToPurge.has(a.id_lead));
+    this.db.respostas = this.db.respostas.filter(r => !idsToPurge.has(r.id_lead));
+    this.db.crm = this.db.crm.filter(c => !idsToPurge.has(c.id_lead));
+    this.db.historico_crm = this.db.historico_crm.filter(h => !crmIdsToPurge.has(h.id_oportunidade));
+    this.db.tarefas = this.db.tarefas.filter(t => !t.id_lead || !idsToPurge.has(t.id_lead));
+  }
+
+  public permanentlyDeleteLead(idLead: string) {
+    const lead = this.db.leads.find(l => l.id_lead === idLead);
+    this.purgeLeadsByIds(new Set([idLead]));
+    this.log('AUDIT', 'LEAD_DELETED_PERMANENT', `Lead ${lead?.nome || idLead} (${idLead}) excluído definitivamente.`);
+    this.salvar(this.db);
+  }
+
+  public emptyLeadsTrash() {
+    const trashedIds = new Set(this.db.leads.filter(l => l.excluido).map(l => l.id_lead));
+    const count = trashedIds.size;
+    if (count === 0) return;
+    this.purgeLeadsByIds(trashedIds);
+    this.log('AUDIT', 'LEADS_TRASH_EMPTIED', `${count} lead(s) removido(s) definitivamente ao limpar a lixeira.`);
+    this.salvar(this.db);
   }
 
   public updateConfig(chave: string, valor: string) {

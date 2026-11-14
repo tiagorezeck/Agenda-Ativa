@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { EventoEntity, HorarioEntity, CampoFormularioEntity } from '../../types/database';
+import { EventoEntity, HorarioEntity, CampoFormularioEntity, ModoDatasEvento } from '../../types/database';
 import { storage } from '../../services/storageService';
-import { X, Plus, Trash2, Clock, Calendar, Check, Image as ImageIcon } from 'lucide-react';
-import { gerarCodigoAleatorio } from '../../utils/formatters';
+import { X, Plus, Trash2, Clock, Calendar, Check, Image as ImageIcon, Tag, Repeat, CalendarDays, MapPin } from 'lucide-react';
+import { gerarCodigoAleatorio, formatarDataBR, formatarMoedaBRL, obterDiaSemanaAbrev, DIAS_SEMANA_MAP } from '../../utils/formatters';
 import { compressImageFileToDataUrl } from '../../utils/imageCompressor';
 
 interface EventModalProps {
@@ -34,6 +34,52 @@ export const EventModal: React.FC<EventModalProps> = ({
   const [slug, setSlug] = useState(eventoParaEditar?.slug || '');
   const [descricao, setDescricao] = useState(eventoParaEditar?.descricao || '');
   const [imagemUrl, setImagemUrl] = useState(eventoParaEditar?.imagem_url || '');
+
+  // Produto & Valor Mensal + Parcelas para CRM / Página Pública
+  const [produtoNome, setProdutoNome] = useState(eventoParaEditar?.produto_nome || '');
+  const [produtoValorMensal, setProdutoValorMensal] = useState<string>(() => {
+    if (eventoParaEditar?.produto_valor_mensal !== undefined && eventoParaEditar.produto_valor_mensal > 0) {
+      return String(eventoParaEditar.produto_valor_mensal);
+    }
+    if (eventoParaEditar?.produto_valor !== undefined && eventoParaEditar.produto_valor > 0) {
+      const p = Math.max(1, eventoParaEditar.produto_parcelas || 1);
+      return String(Number((eventoParaEditar.produto_valor / p).toFixed(2)));
+    }
+    return '';
+  });
+  const [produtoParcelas, setProdutoParcelas] = useState<number>(
+    eventoParaEditar?.produto_parcelas && eventoParaEditar.produto_parcelas > 0
+      ? eventoParaEditar.produto_parcelas
+      : 1
+  );
+  const [exibirProdutoPublico, setExibirProdutoPublico] = useState<boolean>(
+    eventoParaEditar?.exibir_produto_publico ?? false
+  );
+
+  const valorMensalNum = Math.max(0, Number(String(produtoValorMensal).replace(',', '.')) || 0);
+  const parcelasNum = Math.max(1, Math.floor(Number(produtoParcelas) || 1));
+  const valorTotalCalculado = Number((valorMensalNum * parcelasNum).toFixed(2));
+
+  // Pergunta de Local / Campanha (Escola, Bairro, Unidade...)
+  const [solicitarLocal, setSolicitarLocal] = useState<boolean>(
+    eventoParaEditar?.solicitar_local ?? false
+  );
+  const [labelLocal, setLabelLocal] = useState<string>(
+    eventoParaEditar?.label_local || 'De qual escola, bairro ou local você veio?'
+  );
+  const [localOpcoesText, setLocalOpcoesText] = useState<string>(
+    Array.isArray(eventoParaEditar?.local_opcoes) ? eventoParaEditar!.local_opcoes!.join(', ') : ''
+  );
+
+  // Modo de Datas & Recorrência
+  const initialModoDatas: ModoDatasEvento = eventoParaEditar?.modo_datas
+    || (eventoParaEditar?.recorrencia_ativa ? 'RECORRENTE' : 'PERIODO');
+  const [modoDatas, setModoDatas] = useState<ModoDatasEvento>(initialModoDatas);
+  const [datasEspecificas, setDatasEspecificas] = useState<string[]>(
+    Array.isArray(eventoParaEditar?.datas_especificas) ? [...eventoParaEditar!.datas_especificas!].sort() : []
+  );
+  const [novaDataEspecifica, setNovaDataEspecifica] = useState(new Date().toISOString().slice(0, 10));
+
   const [dataInicio, setDataInicio] = useState(eventoParaEditar?.data_inicio || new Date().toISOString().slice(0, 10));
   const [dataFim, setDataFim] = useState(eventoParaEditar?.data_fim || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
   const [diasSemana, setDiasSemana] = useState<string[]>(eventoParaEditar?.dias_semana || ['SEG', 'TER', 'QUA', 'QUI', 'SEX']);
@@ -47,6 +93,7 @@ export const EventModal: React.FC<EventModalProps> = ({
   );
   const [permiteCancelamento, setPermiteCancelamento] = useState(eventoParaEditar?.permite_cancelamento ?? true);
   const [horasAntecedencia, setHorasAntecedencia] = useState(eventoParaEditar?.horas_antecedencia_cancelamento || 24);
+  const [formErro, setFormErro] = useState<string | null>(null);
 
   // Horários
   const horariosIniciais = isEditing
@@ -82,6 +129,18 @@ export const EventModal: React.FC<EventModalProps> = ({
     }
   };
 
+  const handleAddDataEspecifica = () => {
+    if (!novaDataEspecifica) return;
+    if (!datasEspecificas.includes(novaDataEspecifica)) {
+      setDatasEspecificas([...datasEspecificas, novaDataEspecifica].sort());
+    }
+    setFormErro(null);
+  };
+
+  const handleRemoveDataEspecifica = (iso: string) => {
+    setDatasEspecificas(datasEspecificas.filter(d => d !== iso));
+  };
+
   const handleAddHorario = () => {
     if (!novoInicio || !novoFim) return;
     const novoH: HorarioEntity = {
@@ -102,9 +161,26 @@ export const EventModal: React.FC<EventModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setFormErro(null);
     if (!nome.trim() || !slug.trim()) return;
 
+    if (modoDatas !== 'DATAS_ESPECIFICAS' && diasSemana.length === 0) {
+      setFormErro('Selecione pelo menos 1 dia da semana para este evento.');
+      return;
+    }
+    if (modoDatas === 'DATAS_ESPECIFICAS' && datasEspecificas.length === 0) {
+      setFormErro('Adicione pelo menos 1 data específica para este evento.');
+      return;
+    }
+
     const idEvento = eventoParaEditar?.id_evento || `EVT-${gerarCodigoAleatorio(4)}`;
+    const isRecorrente = modoDatas === 'RECORRENTE';
+    const isDatasEspecificas = modoDatas === 'DATAS_ESPECIFICAS';
+
+    const localOpcoesArray = localOpcoesText
+      .split(/[\n,;]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
 
     const eventoFinal: EventoEntity = {
       id_evento: idEvento,
@@ -112,9 +188,20 @@ export const EventModal: React.FC<EventModalProps> = ({
       nome: nome.trim(),
       descricao: descricao.trim(),
       imagem_url: imagemUrl.trim() || undefined,
-      data_inicio: dataInicio,
-      data_fim: dataFim,
-      dias_semana: diasSemana,
+      produto_nome: produtoNome.trim() || undefined,
+      produto_valor_mensal: valorMensalNum,
+      produto_parcelas: parcelasNum,
+      produto_valor: valorTotalCalculado,
+      exibir_produto_publico: exibirProdutoPublico,
+      solicitar_local: solicitarLocal,
+      label_local: solicitarLocal ? (labelLocal.trim() || 'Local / Campanha de Origem') : undefined,
+      local_opcoes: solicitarLocal ? localOpcoesArray : [],
+      modo_datas: modoDatas,
+      recorrencia_ativa: isRecorrente,
+      datas_especificas: isDatasEspecificas ? [...datasEspecificas].sort() : [],
+      data_inicio: isDatasEspecificas ? (datasEspecificas[0] || dataInicio) : dataInicio,
+      data_fim: isRecorrente ? '' : isDatasEspecificas ? (datasEspecificas[datasEspecificas.length - 1] || dataFim) : dataFim,
+      dias_semana: isDatasEspecificas ? ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'] : diasSemana,
       duracao_minutos: Number(duracaoMinutos) || 60,
       intervalo_minutos: Number(intervaloMinutos) || 0,
       capacidade_padrao: Number(capacidadePadrao) || 5,
@@ -130,7 +217,7 @@ export const EventModal: React.FC<EventModalProps> = ({
     const horariosFinais = horarios.map(h => ({
       ...h,
       id_evento: idEvento,
-      dias_aplicaveis: diasSemana
+      dias_aplicaveis: isDatasEspecificas ? ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'] : diasSemana
     }));
 
     const camposAtuais = db.campos_formulario.filter(c => c.id_evento === idEvento);
@@ -366,63 +453,404 @@ export const EventModal: React.FC<EventModalProps> = ({
             </div>
           </div>
 
-          {/* Período e Dias da Semana */}
+          {/* Produto & Valor Mensal + Parcelas Atrelado (CRM / Comercial) */}
+          <div className="space-y-4 pt-4 border-t border-neutral-200 dark:border-neutral-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Tag className="w-4 h-4 text-emerald-500" />
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                  Produto, Parcelamento &amp; Valor Final (CRM)
+                </h4>
+              </div>
+              {valorTotalCalculado > 0 && (
+                <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  {parcelasNum > 1
+                    ? `${parcelasNum}x de ${formatarMoedaBRL(valorMensalNum)} = Total ${formatarMoedaBRL(valorTotalCalculado)}`
+                    : `Valor Final: ${formatarMoedaBRL(valorTotalCalculado)}`}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
+              <div className="sm:col-span-5">
+                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  Produto / Serviço Atrelado
+                </label>
+                <input
+                  type="text"
+                  value={produtoNome}
+                  onChange={(e) => setProdutoNome(e.target.value)}
+                  placeholder="Ex: Mentoria Comercial 90 Dias"
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div className="sm:col-span-3">
+                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  Valor Mensal / Parcela (R$)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={produtoValorMensal}
+                  onChange={(e) => setProdutoValorMensal(e.target.value)}
+                  placeholder="1000.00"
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  Parcelas (x)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={120}
+                  value={produtoParcelas}
+                  onChange={(e) => setProdutoParcelas(Math.max(1, Number(e.target.value) || 1))}
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  Valor Final
+                </label>
+                <div className="w-full px-2.5 py-2 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-lg text-sm font-mono font-bold text-emerald-700 dark:text-emerald-300 truncate">
+                  {formatarMoedaBRL(valorTotalCalculado)}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/40 rounded-xl">
+              <label className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={exibirProdutoPublico}
+                  onChange={(e) => setExibirProdutoPublico(e.target.checked)}
+                  className="rounded bg-white dark:bg-neutral-950 border-neutral-300 dark:border-neutral-700 text-orange-600 focus:ring-0"
+                />
+                <span>Exibir produto, parcelas e valor total na página pública do agendamento</span>
+              </label>
+              <span className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                Valor final (mensal × parcelas) vai direto para o Lead e CRM
+              </span>
+            </div>
+          </div>
+
+          {/* Pergunta de Local / Campanha (Escola, Bairro, Unidade...) */}
+          <div className="space-y-3 pt-4 border-t border-neutral-200 dark:border-neutral-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-orange-500" />
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                  Local / Campanha de Captação (Escola, Bairro, Unidade)
+                </h4>
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2.5 p-3 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs text-neutral-800 dark:text-neutral-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={solicitarLocal}
+                onChange={(e) => setSolicitarLocal(e.target.checked)}
+                className="rounded bg-white dark:bg-neutral-900 border-neutral-300 dark:border-neutral-700 text-orange-600 focus:ring-0"
+              />
+              <div>
+                <span className="font-semibold">Gerar pergunta de Local no agendamento e salvar no cadastro do Lead</span>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                  Ideal para campanhas em escolas, bairros ou pontos específicos. O que o participante responder entra no campo Local do Lead.
+                </p>
+              </div>
+            </label>
+
+            {solicitarLocal && (
+              <div className="p-4 bg-orange-50/50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/50 rounded-xl space-y-3">
+                <div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                      Pergunta exibida para o participante *
+                    </label>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] text-neutral-400">Modelos:</span>
+                      <button
+                        type="button"
+                        onClick={() => setLabelLocal('De qual escola você é / estuda?')}
+                        className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        Escola
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLabelLocal('Qual é o seu bairro?')}
+                        className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        Bairro
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLabelLocal('Qual unidade / ponto de captação?')}
+                        className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        Unidade
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    type="text"
+                    value={labelLocal}
+                    onChange={(e) => setLabelLocal(e.target.value)}
+                    placeholder="Ex: Qual é o nome da escola? ou Qual seu bairro?"
+                    className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    Opções pré-definidas (opcional — separe por vírgula)
+                  </label>
+                  <input
+                    type="text"
+                    value={localOpcoesText}
+                    onChange={(e) => setLocalOpcoesText(e.target.value)}
+                    placeholder="Ex: Escola Estadual Centro, Colégio Modelo, Bairro Jardins (deixe vazio para texto livre)"
+                    className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                  />
+                  <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1">
+                    Se preencher opções, o cliente escolhe na lista (com opção &quot;Outro&quot;). Se deixar vazio, o cliente digita livremente.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Período, Recorrência Semanal e Datas Distintas */}
           <div className="space-y-4 pt-4 border-t border-neutral-200 dark:border-neutral-800">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-              Período e Dias Aplicáveis
+              Recorrência, Período &amp; Datas Distintas
             </h4>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  Data Inicial
-                </label>
-                <input
-                  type="date"
-                  required
-                  value={dataInicio}
-                  onChange={(e) => setDataInicio(e.target.value)}
-                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  Data Final
-                </label>
-                <input
-                  type="date"
-                  required
-                  value={dataFim}
-                  onChange={(e) => setDataFim(e.target.value)}
-                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
-                />
-              </div>
+            {/* Seletor de Modo de Datas */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setModoDatas('RECORRENTE');
+                  setFormErro(null);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  modoDatas === 'RECORRENTE'
+                    ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-500 text-orange-900 dark:text-orange-100 shadow-xs'
+                    : 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 text-xs font-bold">
+                  <Repeat className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                  <span>Recorrente Semanal</span>
+                </div>
+                <p className="text-[11px] opacity-75 mt-1 leading-snug">
+                  Repete toda semana nos dias marcados (só para ao desativar).
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModoDatas('PERIODO');
+                  setFormErro(null);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  modoDatas === 'PERIODO'
+                    ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-500 text-orange-900 dark:text-orange-100 shadow-xs'
+                    : 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 text-xs font-bold">
+                  <Calendar className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                  <span>Período Fechado</span>
+                </div>
+                <p className="text-[11px] opacity-75 mt-1 leading-snug">
+                  Funciona entre uma Data Inicial e uma Data Final nos dias escolhidos.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModoDatas('DATAS_ESPECIFICAS');
+                  setFormErro(null);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  modoDatas === 'DATAS_ESPECIFICAS'
+                    ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-500 text-orange-900 dark:text-orange-100 shadow-xs'
+                    : 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 text-xs font-bold">
+                  <CalendarDays className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                  <span>Datas Específicas</span>
+                </div>
+                <p className="text-[11px] opacity-75 mt-1 leading-snug">
+                  Escolha datas avulsas/distintas no calendário (ex: 17/11 e 19/11).
+                </p>
+              </button>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-2">
-                Dias da Semana Disponíveis
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {DIAS_SEMANA_OPCOES.map((d) => {
-                  const sel = diasSemana.includes(d.id);
-                  return (
-                    <button
-                      type="button"
-                      key={d.id}
-                      onClick={() => toggleDiaSemana(d.id)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                        sel
-                          ? 'bg-orange-600 text-white font-semibold'
-                          : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {d.label}
-                    </button>
-                  );
-                })}
+            {modoDatas === 'DATAS_ESPECIFICAS' ? (
+              <div className="p-4 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3">
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="flex-1 min-w-[180px]">
+                    <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                      Adicionar Data Distinta
+                    </label>
+                    <input
+                      type="date"
+                      value={novaDataEspecifica}
+                      onChange={(e) => setNovaDataEspecifica(e.target.value)}
+                      className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddDataEspecifica}
+                    className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Adicionar Data</span>
+                  </button>
+                </div>
+
+                {datasEspecificas.length === 0 ? (
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                    Nenhuma data adicionada ainda. Escolha uma data acima e clique em Adicionar Data.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {datasEspecificas.map((iso) => {
+                      const abrev = obterDiaSemanaAbrev(iso);
+                      return (
+                        <span
+                          key={iso}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs font-mono text-neutral-800 dark:text-neutral-200"
+                        >
+                          <span>{formatarDataBR(iso)}</span>
+                          <span className="text-[10px] text-orange-600 dark:text-orange-400 font-sans font-semibold">
+                            {DIAS_SEMANA_MAP[abrev]?.split('-')[0] || abrev}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveDataEspecifica(iso)}
+                            className="text-neutral-400 hover:text-rose-500 cursor-pointer"
+                            title="Remover data"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                      Data Inicial (a partir de)
+                    </label>
+                    <input
+                      type="date"
+                      required
+                      value={dataInicio}
+                      onChange={(e) => setDataInicio(e.target.value)}
+                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
+                    />
+                  </div>
+
+                  {modoDatas === 'PERIODO' ? (
+                    <div>
+                      <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                        Data Final
+                      </label>
+                      <input
+                        type="date"
+                        required
+                        value={dataFim}
+                        onChange={(e) => setDataFim(e.target.value)}
+                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500 font-mono"
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col justify-end">
+                      <div className="px-3 py-2 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50 rounded-lg text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
+                        <Repeat className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                        <span>Sem data final — ativo todas as semanas até você desativar</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                      Dias da Semana Disponíveis (clique para marcar/desmarcar)
+                    </label>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setDiasSemana(['TER', 'QUI'])}
+                        className="px-2 py-0.5 bg-neutral-100 hover:bg-orange-100 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-[10px] rounded text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        Ter e Qui
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiasSemana(['SEG', 'QUA', 'SEX'])}
+                        className="px-2 py-0.5 bg-neutral-100 hover:bg-orange-100 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-[10px] rounded text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        Seg, Qua e Sex
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiasSemana(['SEG', 'TER', 'QUA', 'QUI', 'SEX'])}
+                        className="px-2 py-0.5 bg-neutral-100 hover:bg-orange-100 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-[10px] rounded text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        Seg a Sex
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDiasSemana([])}
+                        className="px-2 py-0.5 bg-neutral-100 hover:bg-rose-100 dark:bg-neutral-800 dark:hover:bg-rose-950 text-[10px] rounded text-neutral-600 dark:text-neutral-400 cursor-pointer"
+                      >
+                        Limpar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {DIAS_SEMANA_OPCOES.map((d) => {
+                      const sel = diasSemana.includes(d.id);
+                      return (
+                        <button
+                          type="button"
+                          key={d.id}
+                          onClick={() => toggleDiaSemana(d.id)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                            sel
+                              ? 'bg-orange-600 text-white font-semibold'
+                              : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white'
+                          }`}
+                        >
+                          {d.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Horários e Capacidade */}
@@ -552,6 +980,12 @@ export const EventModal: React.FC<EventModalProps> = ({
               )}
             </div>
           </div>
+
+          {formErro && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 rounded-xl text-xs text-rose-700 dark:text-rose-300">
+              {formErro}
+            </div>
+          )}
 
           {/* Modal Actions */}
           <div className="pt-4 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-end gap-3">

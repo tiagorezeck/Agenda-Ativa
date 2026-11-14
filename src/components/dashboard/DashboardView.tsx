@@ -46,7 +46,7 @@ export const DashboardView: React.FC = () => {
 
   // Cálculos de Indicadores Oficiais
   const totalAgendamentos = agendamentosFiltrados.length;
-  const totalLeads = db.leads.length;
+  const totalLeads = db.leads.filter((l) => !l.excluido).length;
 
   const vagasPreenchidas = agendamentosFiltrados.filter(
     (a) => a.status === 'CONFIRMADO' || a.status === 'REALIZADO'

@@ -112,12 +112,29 @@ export const AvailabilityManagerView: React.FC<AvailabilityManagerProps> = ({ in
               </div>
 
               <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800 space-y-2 text-xs text-neutral-500 dark:text-neutral-400">
-                <div className="flex items-center justify-between">
-                  <span>Período do Evento:</span>
-                  <span className="font-mono text-neutral-800 dark:text-neutral-300">
-                    {formatarDataBR(eventoAtual.data_inicio)} até {formatarDataBR(eventoAtual.data_fim)}
+                <div className="flex items-center justify-between gap-2">
+                  <span>Programação:</span>
+                  <span className="font-mono text-right text-neutral-800 dark:text-neutral-300">
+                    {eventoAtual.modo_datas === 'DATAS_ESPECIFICAS'
+                      ? `${eventoAtual.datas_especificas?.length || 0} data(s) específica(s)`
+                      : eventoAtual.recorrencia_ativa || eventoAtual.modo_datas === 'RECORRENTE'
+                      ? `Recorrente (${(eventoAtual.dias_semana || []).join(', ')})`
+                      : `${formatarDataBR(eventoAtual.data_inicio)} até ${formatarDataBR(eventoAtual.data_fim)}`}
                   </span>
                 </div>
+                {(eventoAtual.produto_nome || (eventoAtual.produto_valor && eventoAtual.produto_valor > 0)) && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Produto / Valor:</span>
+                    <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400 text-right truncate">
+                      {eventoAtual.produto_nome ? `${eventoAtual.produto_nome} · ` : ''}
+                      {eventoAtual.produto_parcelas && eventoAtual.produto_parcelas > 1 && eventoAtual.produto_valor_mensal
+                        ? `${eventoAtual.produto_parcelas}x R$ ${eventoAtual.produto_valor_mensal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (`
+                        : ''}
+                      {eventoAtual.produto_valor ? `R$ ${eventoAtual.produto_valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : ''}
+                      {eventoAtual.produto_parcelas && eventoAtual.produto_parcelas > 1 && eventoAtual.produto_valor_mensal ? ')' : ''}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span>Capacidade Base por Slot:</span>
                   <span className="font-mono font-bold text-orange-600 dark:text-orange-400">

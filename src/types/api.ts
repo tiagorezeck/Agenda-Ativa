@@ -46,6 +46,7 @@ export interface BookingSubmissionPayload {
   whatsapp: string;
   email: string;
   empresa?: string;
+  local?: string; // Local / Campanha informada no formulário (ex: Escola, Bairro)
   respostas_customizadas: Record<string, string>; // campo_id -> valor
 }
 

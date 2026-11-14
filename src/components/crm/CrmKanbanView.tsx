@@ -54,7 +54,10 @@ export const CrmKanbanView: React.FC = () => {
 
   // Nova Oportunidade Manual
   const [novoTitulo, setNovoTitulo] = useState('');
-  const [novoLeadId, setNovoLeadId] = useState(db.leads[0]?.id_lead || '');
+  const [novoProdutoNome, setNovoProdutoNome] = useState('');
+  const [novoValorMensal, setNovoValorMensal] = useState<number>(0);
+  const [novoParcelas, setNovoParcelas] = useState<number>(1);
+  const [novoLeadId, setNovoLeadId] = useState(db.leads.find(l => !l.excluido)?.id_lead || '');
   const [novoValorEstimado, setNovoValorEstimado] = useState(5000);
   const [novoResponsavel, setNovoResponsavel] = useState('USR-001');
 
@@ -184,6 +187,9 @@ export const CrmKanbanView: React.FC = () => {
       id_oportunidade: idOp,
       id_lead: novoLeadId,
       titulo: novoTitulo.trim(),
+      produto_nome: novoProdutoNome.trim() || undefined,
+      produto_valor_mensal: novoValorMensal > 0 ? novoValorMensal : undefined,
+      produto_parcelas: novoValorMensal > 0 ? Math.max(1, novoParcelas) : undefined,
       estagio: 'ENTRADA',
       sub_status: 'FOLLOW',
       valor_estimado: Number(novoValorEstimado) || 0,
@@ -200,6 +206,9 @@ export const CrmKanbanView: React.FC = () => {
 
     setModalNovoCard(false);
     setNovoTitulo('');
+    setNovoProdutoNome('');
+    setNovoValorMensal(0);
+    setNovoParcelas(1);
     setRefreshKey(k => k + 1);
   };
 
@@ -353,10 +362,18 @@ export const CrmKanbanView: React.FC = () => {
                             </span>
                           </div>
 
-                          {/* Lead */}
+                          {/* Lead & Produto */}
                           {lead && (
                             <p className="text-[11px] font-medium truncate text-orange-600 dark:text-orange-400">
                               {lead.nome} {lead.empresa ? `· ${lead.empresa}` : ''}
+                            </p>
+                          )}
+                          {card.produto_nome && (
+                            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                              Produto: {card.produto_nome}
+                              {card.produto_parcelas && card.produto_parcelas > 1 && card.produto_valor_mensal
+                                ? ` · ${card.produto_parcelas}x ${formatarMoedaBRL(card.produto_valor_mensal)}`
+                                : ''}
                             </p>
                           )}
 
@@ -451,12 +468,54 @@ export const CrmKanbanView: React.FC = () => {
                   onChange={(e) => setNovoLeadId(e.target.value)}
                   className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white"
                 >
-                  {db.leads.map(l => (
+                  {db.leads.filter(l => !l.excluido).map(l => (
                     <option key={l.id_lead} value={l.id_lead}>
                       {l.nome} ({l.empresa || 'Sem empresa'})
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">Produto do Evento (Opcional — preenche valor automaticamente)</label>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const ev = db.eventos.find(item => item.id_evento === e.target.value);
+                    if (ev) {
+                      setNovoProdutoNome(ev.produto_nome || ev.nome);
+                      const vMensal = Number(ev.produto_valor_mensal) || 0;
+                      const parc = Math.max(1, Number(ev.produto_parcelas) || 1);
+                      const vTotal = Number(ev.produto_valor) || (vMensal * parc);
+                      setNovoValorMensal(vMensal);
+                      setNovoParcelas(parc);
+                      if (vTotal > 0) {
+                        setNovoValorEstimado(vTotal);
+                      }
+                    }
+                  }}
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white"
+                >
+                  <option value="">Selecionar produto de um evento...</option>
+                  {db.eventos.map(ev => (
+                    <option key={ev.id_evento} value={ev.id_evento}>
+                      {ev.produto_nome || ev.nome}{' '}
+                      {ev.produto_valor
+                        ? ev.produto_parcelas && ev.produto_parcelas > 1 && ev.produto_valor_mensal
+                          ? `(${ev.produto_parcelas}x ${formatarMoedaBRL(ev.produto_valor_mensal)} = ${formatarMoedaBRL(ev.produto_valor)})`
+                          : `(${formatarMoedaBRL(ev.produto_valor)})`
+                        : ''}
+                    </option>
+                  ))}
+                </select>
+                {novoProdutoNome && (
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1">
+                    Produto selecionado: <strong>{novoProdutoNome}</strong>
+                    {novoParcelas > 1 && novoValorMensal > 0
+                      ? ` · ${novoParcelas}x de ${formatarMoedaBRL(novoValorMensal)}`
+                      : ''}
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -655,6 +714,14 @@ export const CrmKanbanView: React.FC = () => {
                   <p className="font-mono text-base font-bold text-neutral-900 dark:text-white mt-0.5">
                     {formatarMoedaBRL(cardEmEdicao.valor_estimado)}
                   </p>
+                  {cardEmEdicao.produto_nome && (
+                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
+                      {cardEmEdicao.produto_nome}
+                      {cardEmEdicao.produto_parcelas && cardEmEdicao.produto_parcelas > 1 && cardEmEdicao.produto_valor_mensal
+                        ? ` (${cardEmEdicao.produto_parcelas}x ${formatarMoedaBRL(cardEmEdicao.produto_valor_mensal)})`
+                        : ''}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <span className="text-neutral-500 dark:text-neutral-400">Valor Fechado:</span>

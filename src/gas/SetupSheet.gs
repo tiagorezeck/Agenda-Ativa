@@ -19,6 +19,9 @@ function inicializarPlanilha() {
     ],
     EVENTOS: [
       'id_evento', 'slug', 'nome', 'descricao', 'imagem_url',
+      'produto_nome', 'produto_valor_mensal', 'produto_parcelas', 'produto_valor', 'exibir_produto_publico',
+      'solicitar_local', 'label_local', 'local_opcoes',
+      'modo_datas', 'recorrencia_ativa', 'datas_especificas',
       'data_inicio', 'data_fim', 'dias_semana', 'duracao_minutos',
       'intervalo_minutos', 'capacidade_padrao', 'responsavel_id',
       'status', 'mensagem_confirmacao', 'permite_cancelamento',
@@ -38,9 +41,9 @@ function inicializarPlanilha() {
       'motivo_cancelamento', 'cancelado_em', 'criado_em'
     ],
     LEADS: [
-      'id_lead', 'nome', 'whatsapp', 'email', 'empresa', 'cargo',
+      'id_lead', 'nome', 'whatsapp', 'email', 'empresa', 'cargo', 'local', 'status_cliente',
       'origem_primeiro_evento', 'total_agendamentos', 'data_ultimo_agendamento',
-      'responsavel_id', 'observacoes', 'criado_em', 'atualizado_em'
+      'responsavel_id', 'observacoes', 'excluido', 'excluido_em', 'criado_em', 'atualizado_em'
     ],
     CAMPOS_FORMULARIO: [
       'id_campo', 'id_evento', 'nome_campo', 'label', 'tipo',
@@ -51,7 +54,8 @@ function inicializarPlanilha() {
       'valor', 'criado_em'
     ],
     CRM: [
-      'id_oportunidade', 'id_lead', 'id_agendamento_origem', 'titulo',
+      'id_oportunidade', 'id_lead', 'id_agendamento_origem', 'titulo', 'produto_nome',
+      'produto_valor_mensal', 'produto_parcelas',
       'estagio', 'sub_status', 'valor_estimado', 'valor_fechado', 'responsavel_id',
       'data_proximo_followup', 'motivo_perda', 'data_fechamento',
       'ordem_coluna', 'criado_em', 'atualizado_em'

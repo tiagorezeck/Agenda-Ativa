@@ -3,6 +3,7 @@ import { storage } from '../../services/storageService';
 import { BookingSubmissionPayload, BookingSuccessResult } from '../../types/api';
 import {
   formatarDataBR,
+  formatarMoedaBRL,
   formatarTelefoneBR,
   gerarLinkWhatsApp,
   obterDiaSemanaAbrev,
@@ -31,7 +32,8 @@ import {
   Search,
   XCircle,
   CalendarClock,
-  X
+  X,
+  Tag
 } from 'lucide-react';
 
 interface PublicBookingViewProps {
@@ -81,6 +83,8 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   const [whatsapp, setWhatsapp] = useState('');
   const [email, setEmail] = useState('');
   const [empresa, setEmpresa] = useState('');
+  const [localResposta, setLocalResposta] = useState('');
+  const [localOutro, setLocalOutro] = useState('');
   const [respostasCustom, setRespostasCustom] = useState<Record<string, string>>({});
   const [lgpdAceito, setLgpdAceito] = useState(true);
 
@@ -116,7 +120,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     return `${y}-${m}-${day}`;
   };
 
-  // Lista de datas disponíveis respeitando data_inicio, data_fim e dias_semana do evento
+  // Lista de datas disponíveis respeitando Recorrência Semanal, Datas Específicas ou Período Fechado
   const proximasDatas = useMemo(() => {
     if (!eventoAtual) return [];
     const list: { dataIso: string; diaSemana: string; rotulo: string }[] = [];
@@ -127,6 +131,21 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     amanha.setDate(hoje.getDate() + 1);
     const amanhaIso = toLocalIsoDate(amanha);
 
+    if (eventoAtual.modo_datas === 'DATAS_ESPECIFICAS') {
+      const especificas = Array.isArray(eventoAtual.datas_especificas)
+        ? [...eventoAtual.datas_especificas].filter(iso => iso >= hojeIso).sort()
+        : [];
+      for (const iso of especificas) {
+        const abrev = obterDiaSemanaAbrev(iso);
+        let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+        if (iso === hojeIso) rotulo = 'Hoje';
+        else if (iso === amanhaIso) rotulo = 'Amanhã';
+        list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+      }
+      return list;
+    }
+
+    const isRecorrente = Boolean(eventoAtual.recorrencia_ativa) || eventoAtual.modo_datas === 'RECORRENTE';
     const diasPermitidos = Array.isArray(eventoAtual.dias_semana) && eventoAtual.dias_semana.length > 0
       ? eventoAtual.dias_semana
       : ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
@@ -134,9 +153,9 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     const inicioStr = eventoAtual.data_inicio && eventoAtual.data_inicio > hojeIso
       ? eventoAtual.data_inicio
       : hojeIso;
-    const fimStr = eventoAtual.data_fim || '';
+    const fimStr = isRecorrente ? '' : (eventoAtual.data_fim || '');
 
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 90; i++) {
       const d = new Date(hoje);
       d.setDate(hoje.getDate() + i);
       const iso = toLocalIsoDate(d);
@@ -152,7 +171,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       else if (iso === amanhaIso) rotulo = 'Amanhã';
 
       list.push({ dataIso: iso, diaSemana: abrev, rotulo });
-      if (list.length >= 21) break;
+      if (list.length >= 24) break;
     }
     return list;
   }, [eventoAtual]);
@@ -196,6 +215,18 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       return;
     }
 
+    const temOpcoesLocal = Boolean(
+      eventoAtual.solicitar_local && Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0
+    );
+    const valorLocalFinal = eventoAtual.solicitar_local
+      ? (temOpcoesLocal && localResposta === '__OUTRO__' ? localOutro.trim() : localResposta.trim())
+      : '';
+
+    if (eventoAtual.solicitar_local && !valorLocalFinal) {
+      setErroMsg(`Por favor, responda: ${eventoAtual.label_local || 'Local / Campanha de Origem'}.`);
+      return;
+    }
+
     setErroMsg(null);
     setIsSubmitting(true);
 
@@ -209,6 +240,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
         whatsapp: whatsapp.trim(),
         email: email.trim(),
         empresa: empresa.trim(),
+        local: valorLocalFinal || undefined,
         respostas_customizadas: respostasCustom
       };
 
@@ -230,6 +262,8 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     setWhatsapp('');
     setEmail('');
     setEmpresa('');
+    setLocalResposta('');
+    setLocalOutro('');
     setRespostasCustom({});
     setErroMsg(null);
   };
@@ -362,6 +396,14 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
               <span className="text-neutral-500 dark:text-neutral-400 shrink-0">WhatsApp:</span>
               <span className="font-mono text-neutral-900 dark:text-white">{formatarTelefoneBR(whatsapp)}</span>
             </div>
+            {(localResposta === '__OUTRO__' ? localOutro.trim() : localResposta.trim()) && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-neutral-500 dark:text-neutral-400 shrink-0">Local / Origem:</span>
+                <span className="text-neutral-900 dark:text-white font-medium text-right truncate">
+                  {localResposta === '__OUTRO__' ? localOutro.trim() : localResposta.trim()}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Mensagem Personalizada */}
@@ -429,6 +471,8 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                 setEtapaAtual(1);
                 setDataSelecionada('');
                 setSlotSelecionado(null);
+                setLocalResposta('');
+                setLocalOutro('');
               }}
               className="px-2.5 py-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-xs text-neutral-800 dark:text-neutral-200 max-w-[130px] sm:max-w-[200px] truncate shadow-xs focus:outline-none"
             >
@@ -574,6 +618,29 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             {eventoAtual.descricao || 'Selecione uma data para começar seu agendamento.'}
           </p>
 
+          {eventoAtual.exibir_produto_publico && (eventoAtual.produto_nome || (eventoAtual.produto_valor && eventoAtual.produto_valor > 0)) && (
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50 rounded-xl text-xs">
+              <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-200">
+                <Tag className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span className="font-semibold">{eventoAtual.produto_nome || eventoAtual.nome}</span>
+              </div>
+              {eventoAtual.produto_valor && eventoAtual.produto_valor > 0 ? (
+                <div className="text-right font-mono font-bold text-emerald-700 dark:text-emerald-300">
+                  {eventoAtual.produto_parcelas && eventoAtual.produto_parcelas > 1 && eventoAtual.produto_valor_mensal && eventoAtual.produto_valor_mensal > 0 ? (
+                    <span>
+                      {eventoAtual.produto_parcelas}x de {formatarMoedaBRL(eventoAtual.produto_valor_mensal)}{' '}
+                      <span className="text-[11px] font-normal opacity-80">
+                        (Total: {formatarMoedaBRL(eventoAtual.produto_valor)})
+                      </span>
+                    </span>
+                  ) : (
+                    <span>{formatarMoedaBRL(eventoAtual.produto_valor)}</span>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )}
+
           {/* Stepper Visual Responsivo */}
           <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 pt-3 border-t border-neutral-100 dark:border-neutral-800 text-xs">
             <button
@@ -668,10 +735,14 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
               <div className="p-6 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-2xl text-center space-y-1.5">
                 <Calendar className="w-8 h-8 text-neutral-400 mx-auto" />
                 <p className="text-xs font-semibold text-neutral-800 dark:text-neutral-200">
-                  Nenhuma data disponível dentro do período configurado para este evento.
+                  Nenhuma data disponível dentro da programação deste evento.
                 </p>
                 <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  Período do evento: {formatarDataBR(eventoAtual.data_inicio)} até {formatarDataBR(eventoAtual.data_fim)}.
+                  {eventoAtual.modo_datas === 'DATAS_ESPECIFICAS'
+                    ? 'Aguardando novas datas específicas serem liberadas pela equipe.'
+                    : eventoAtual.recorrencia_ativa || eventoAtual.modo_datas === 'RECORRENTE'
+                    ? `Início programado a partir de ${formatarDataBR(eventoAtual.data_inicio)}.`
+                    : `Período do evento: ${formatarDataBR(eventoAtual.data_inicio)} até ${formatarDataBR(eventoAtual.data_fim)}.`}
                 </p>
               </div>
             ) : (
@@ -894,6 +965,56 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                   />
                 </div>
               </div>
+
+              {/* Pergunta de Local / Campanha (Escola, Bairro, Unidade...) */}
+              {eventoAtual.solicitar_local && (
+                <div className="p-3.5 bg-orange-50/50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/50 rounded-xl space-y-2">
+                  <label className="flex items-center gap-1.5 text-xs font-semibold text-neutral-800 dark:text-neutral-200">
+                    <MapPin className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                    <span>{eventoAtual.label_local || 'De qual escola, bairro ou local você veio?'}</span>
+                    <span className="text-rose-500">*</span>
+                  </label>
+
+                  {Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0 ? (
+                    <div className="space-y-2">
+                      <select
+                        required
+                        value={localResposta}
+                        onChange={(e) => setLocalResposta(e.target.value)}
+                        className="w-full px-3.5 py-2.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                      >
+                        <option value="">Selecione uma opção...</option>
+                        {eventoAtual.local_opcoes.map((op) => (
+                          <option key={op} value={op}>
+                            {op}
+                          </option>
+                        ))}
+                        <option value="__OUTRO__">Outro local (digitar)...</option>
+                      </select>
+
+                      {localResposta === '__OUTRO__' && (
+                        <input
+                          type="text"
+                          required
+                          value={localOutro}
+                          onChange={(e) => setLocalOutro(e.target.value)}
+                          placeholder="Digite o nome do local, escola ou bairro..."
+                          className="w-full px-3.5 py-2.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      required
+                      value={localResposta}
+                      onChange={(e) => setLocalResposta(e.target.value)}
+                      placeholder="Ex: Escola Estadual Centro, Bairro Jardins..."
+                      className="w-full px-3.5 py-2.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                    />
+                  )}
+                </div>
+              )}
 
               {/* Perguntas Dinâmicas do Evento */}
               {camposDoEvento.length > 0 && (

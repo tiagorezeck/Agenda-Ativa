@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { EventoEntity } from '../../types/database';
 import { storage } from '../../services/storageService';
-import { formatarDataBR } from '../../utils/formatters';
+import { formatarDataBR, formatarMoedaBRL } from '../../utils/formatters';
 import { EventModal } from './EventModal';
 import {
   Calendar,
@@ -15,7 +15,10 @@ import {
   Plus,
   Play,
   Pause,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Tag,
+  Repeat,
+  MapPin
 } from 'lucide-react';
 
 interface EventListViewProps {
@@ -172,12 +175,49 @@ export const EventListView: React.FC<EventListViewProps> = ({
                     {ev.descricao || 'Sem descrição cadastrada.'}
                   </p>
 
+                  {/* Produto & Valor Atrelado + Local da Campanha */}
+                  {(ev.produto_nome || (ev.produto_valor && ev.produto_valor > 0) || ev.solicitar_local) && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      {(ev.produto_nome || (ev.produto_valor && ev.produto_valor > 0)) && (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-300 font-medium">
+                          <Tag className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                          <span>{ev.produto_nome || 'Produto atrelado'}</span>
+                          {ev.produto_valor && ev.produto_valor > 0 ? (
+                            <strong className="font-mono ml-1">
+                              {ev.produto_parcelas && ev.produto_parcelas > 1 && ev.produto_valor_mensal && ev.produto_valor_mensal > 0
+                                ? `· ${ev.produto_parcelas}x de ${formatarMoedaBRL(ev.produto_valor_mensal)} (Total ${formatarMoedaBRL(ev.produto_valor)})`
+                                : `· ${formatarMoedaBRL(ev.produto_valor)}`}
+                            </strong>
+                          ) : null}
+                        </span>
+                      )}
+                      {ev.solicitar_local && (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 text-orange-800 dark:text-orange-300 font-medium">
+                          <MapPin className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+                          <span>Local no formulário: {ev.label_local || 'Local / Campanha'}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                   {/* Metadados */}
                   <div className="flex flex-wrap items-center gap-y-1 gap-x-2 text-xs text-neutral-500 dark:text-neutral-400">
-                    <span className="flex items-center gap-1 text-neutral-700 dark:text-neutral-300">
-                      <Calendar className="w-3.5 h-3.5 text-neutral-400" />
-                      {formatarDataBR(ev.data_inicio)} até {formatarDataBR(ev.data_fim)}
-                    </span>
+                    {ev.modo_datas === 'DATAS_ESPECIFICAS' ? (
+                      <span className="flex items-center gap-1 text-neutral-700 dark:text-neutral-300">
+                        <Calendar className="w-3.5 h-3.5 text-orange-500" />
+                        {(ev.datas_especificas?.length || 0)} data(s) específica(s)
+                      </span>
+                    ) : ev.recorrencia_ativa || ev.modo_datas === 'RECORRENTE' ? (
+                      <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-medium">
+                        <Repeat className="w-3.5 h-3.5" />
+                        Recorrente ({(ev.dias_semana || []).join(', ')}) · Contínuo
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-neutral-700 dark:text-neutral-300">
+                        <Calendar className="w-3.5 h-3.5 text-neutral-400" />
+                        {formatarDataBR(ev.data_inicio)} até {formatarDataBR(ev.data_fim)} ({(ev.dias_semana || []).join(', ')})
+                      </span>
+                    )}
                     <span className="text-neutral-300 dark:text-neutral-700" aria-hidden="true">·</span>
                     <span className="flex items-center gap-1 text-neutral-700 dark:text-neutral-300">
                       <Clock className="w-3.5 h-3.5 text-neutral-400" />

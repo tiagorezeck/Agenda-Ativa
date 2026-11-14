@@ -23,14 +23,27 @@ export interface UsuarioEntity {
 
 export type StatusEvento = 'PUBLICADO' | 'PAUSADO' | 'ENCERRADO' | 'RASCUNHO';
 
+export type ModoDatasEvento = 'RECORRENTE' | 'PERIODO' | 'DATAS_ESPECIFICAS';
+
 export interface EventoEntity {
   id_evento: string; // ex: EVT-001
   slug: string; // ex: mentoria-comercial
   nome: string;
   descricao: string;
   imagem_url?: string;
+  produto_nome?: string; // Produto ou serviço atrelado ao evento
+  produto_valor_mensal?: number; // Valor mensal / por parcela (R$)
+  produto_parcelas?: number; // Quantidade de parcelas / meses
+  produto_valor?: number; // Valor total final do produto (valor_mensal * parcelas)
+  exibir_produto_publico?: boolean; // Se exibe o produto/valor na página pública
+  solicitar_local?: boolean; // Ativa pergunta obrigatória de Local (Escola, Bairro, etc.) no agendamento
+  label_local?: string; // Rótulo da pergunta de local (ex: "De qual escola você veio?")
+  local_opcoes?: string[]; // Opções pré-cadastradas (ex: Lista de escolas ou bairros); vazio = texto livre
+  modo_datas?: ModoDatasEvento; // Recorrente semanal, período fechado ou datas específicas
+  recorrencia_ativa?: boolean; // Repete toda semana nos dias marcados até desativar
+  datas_especificas?: string[]; // Lista de datas distintas ['YYYY-MM-DD', ...]
   data_inicio: string; // YYYY-MM-DD
-  data_fim: string; // YYYY-MM-DD
+  data_fim: string; // YYYY-MM-DD (vazio se recorrente contínuo)
   dias_semana: string[]; // ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM']
   duracao_minutos: number; // ex: 45
   intervalo_minutos: number; // ex: 15
@@ -81,6 +94,8 @@ export interface AgendamentoEntity {
   criado_em: string;
 }
 
+export type StatusClienteLead = 'LEAD' | 'CLIENTE';
+
 export interface LeadEntity {
   id_lead: string; // ex: LED-0001
   nome: string;
@@ -88,11 +103,15 @@ export interface LeadEntity {
   email: string;
   empresa?: string;
   cargo?: string;
+  local?: string; // Local / Campanha específica (ex: Escola, Bairro, Unidade)
+  status_cliente?: StatusClienteLead; // 'LEAD' ou 'CLIENTE' (promovido automaticamente ao fechar venda)
   origem_primeiro_evento: string; // FK -> Evento
   total_agendamentos: number;
   data_ultimo_agendamento: string;
   responsavel_id: string; // FK -> Usuario
   observacoes?: string;
+  excluido?: boolean; // Encaminhado para Lixeira
+  excluido_em?: string; // Data/hora em que foi movido para Lixeira
   criado_em: string;
   atualizado_em: string;
 }
@@ -145,6 +164,9 @@ export interface CrmOportunidadeEntity {
   id_lead: string; // FK -> Lead
   id_agendamento_origem?: string; // FK -> Agendamento
   titulo: string;
+  produto_nome?: string; // Produto atrelado do evento
+  produto_valor_mensal?: number; // Valor mensal / parcela
+  produto_parcelas?: number; // Número de parcelas
   estagio: EstagioCrm;
   sub_status?: 'FOLLOW' | 'STAND'; // 'FOLLOW' (amarelo) ou 'STAND' (cinza)
   valor_estimado: number;

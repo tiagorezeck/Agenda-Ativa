@@ -28,6 +28,9 @@ var SHEETS_SCHEMA = {
   USUARIOS: ["id_usuario", "nome", "email", "perfil", "ativo", "criado_em"],
   EVENTOS: [
     "id_evento", "slug", "nome", "descricao", "imagem_url",
+    "produto_nome", "produto_valor_mensal", "produto_parcelas", "produto_valor", "exibir_produto_publico",
+    "solicitar_local", "label_local", "local_opcoes",
+    "modo_datas", "recorrencia_ativa", "datas_especificas",
     "data_inicio", "data_fim", "dias_semana", "duracao_minutos",
     "intervalo_minutos", "capacidade_padrao", "responsavel_id",
     "status", "mensagem_confirmacao", "permite_cancelamento",
@@ -41,9 +44,9 @@ var SHEETS_SCHEMA = {
     "motivo_cancelamento", "cancelado_em", "criado_em"
   ],
   LEADS: [
-    "id_lead", "nome", "whatsapp", "email", "empresa", "cargo",
+    "id_lead", "nome", "whatsapp", "email", "empresa", "cargo", "local", "status_cliente",
     "origem_primeiro_evento", "total_agendamentos", "data_ultimo_agendamento",
-    "responsavel_id", "observacoes", "criado_em", "atualizado_em"
+    "responsavel_id", "observacoes", "excluido", "excluido_em", "criado_em", "atualizado_em"
   ],
   CAMPOS_FORMULARIO: [
     "id_campo", "id_evento", "nome_campo", "label", "tipo",
@@ -51,7 +54,8 @@ var SHEETS_SCHEMA = {
   ],
   RESPOSTAS: ["id_resposta", "id_agendamento", "id_lead", "id_campo", "valor", "criado_em"],
   CRM: [
-    "id_oportunidade", "id_lead", "id_agendamento_origem", "titulo",
+    "id_oportunidade", "id_lead", "id_agendamento_origem", "titulo", "produto_nome",
+    "produto_valor_mensal", "produto_parcelas",
     "estagio", "sub_status", "valor_estimado", "valor_fechado", "responsavel_id",
     "data_proximo_followup", "motivo_perda", "data_fechamento",
     "ordem_coluna", "criado_em", "atualizado_em"
@@ -527,10 +531,12 @@ function executeAtomicBookingOnDb(db, bookingData) {
   var nowIso = new Date().toISOString();
   var whatsappNorm = String(bookingData.whatsapp || "").replace(/\D/g, "");
   var emailNorm = String(bookingData.email || "").trim().toLowerCase();
+  var localNorm = String(bookingData.local || "").trim();
 
   var leadEncontrado = null;
   for (var l = 0; l < db.leads.length; l++) {
     var lObj = db.leads[l];
+    if (lObj.excluido === true) continue;
     var lZap = String(lObj.whatsapp || "").replace(/\D/g, "");
     var lEmail = String(lObj.email || "").trim().toLowerCase();
     if ((whatsappNorm && lZap === whatsappNorm) || (emailNorm && lEmail === emailNorm)) {
@@ -544,6 +550,7 @@ function executeAtomicBookingOnDb(db, bookingData) {
     idLead = leadEncontrado.id_lead;
     leadEncontrado.nome = bookingData.nome || leadEncontrado.nome;
     if (bookingData.empresa) leadEncontrado.empresa = bookingData.empresa;
+    if (localNorm) leadEncontrado.local = localNorm;
     leadEncontrado.total_agendamentos = (Number(leadEncontrado.total_agendamentos) || 0) + 1;
     leadEncontrado.data_ultimo_agendamento = nowIso;
     leadEncontrado.atualizado_em = nowIso;
@@ -556,6 +563,8 @@ function executeAtomicBookingOnDb(db, bookingData) {
       email: emailNorm,
       empresa: bookingData.empresa || "",
       cargo: "",
+      local: localNorm,
+      status_cliente: "LEAD",
       origem_primeiro_evento: evento.id_evento,
       total_agendamentos: 1,
       data_ultimo_agendamento: nowIso,
@@ -602,14 +611,21 @@ function executeAtomicBookingOnDb(db, bookingData) {
   }
 
   var idOportunidade = "CRM-" + Utilities.getUuid().slice(0, 8).toUpperCase();
+  var valorMensal = Number(evento.produto_valor_mensal) || 0;
+  var parcelas = Math.max(1, Number(evento.produto_parcelas) || 1);
+  var valorProduto = Number(evento.produto_valor) || (valorMensal > 0 ? valorMensal * parcelas : 0);
+  var nomeProduto = String(evento.produto_nome || "").trim();
   db.crm.unshift({
     id_oportunidade: idOportunidade,
     id_lead: idLead,
     id_agendamento_origem: idAgendamento,
-    titulo: "Atendimento: " + bookingData.nome + " (" + evento.nome + ")",
+    titulo: "Atendimento: " + bookingData.nome + " (" + (nomeProduto || evento.nome) + ")",
+    produto_nome: nomeProduto,
+    produto_valor_mensal: valorMensal > 0 ? valorMensal : 0,
+    produto_parcelas: valorMensal > 0 ? parcelas : 1,
     estagio: "ENTRADA",
     sub_status: "FOLLOW",
-    valor_estimado: 0,
+    valor_estimado: valorProduto,
     valor_fechado: 0,
     responsavel_id: evento.responsavel_id || "USR-001",
     data_proximo_followup: bookingData.data,
@@ -620,13 +636,17 @@ function executeAtomicBookingOnDb(db, bookingData) {
     atualizado_em: nowIso
   });
 
+  var parcelaInfoTxt = (valorMensal > 0 && parcelas > 1)
+    ? parcelas + "x de R$ " + valorMensal.toFixed(2) + " = "
+    : "";
   db.historico_crm.unshift({
     id_historico: "HCRM-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
     id_oportunidade: idOportunidade,
     tipo: "MUDANCA_ESTAGIO",
     estagio_anterior: "",
     estagio_novo: "ENTRADA",
-    descricao: "Oportunidade gerada automaticamente a partir do agendamento " + protocolo,
+    descricao: "Oportunidade gerada automaticamente a partir do agendamento " + protocolo +
+      (nomeProduto || valorProduto > 0 ? " · Produto: " + (nomeProduto || evento.nome) + " (" + parcelaInfoTxt + "R$ " + valorProduto.toFixed(2) + ")" : ""),
     usuario_id: "SISTEMA",
     criado_em: nowIso
   });
@@ -875,6 +895,11 @@ function syncDataToGoogleSheets(ss, data) {
   mirrorArrayToSheet(ss, "EVENTOS", SHEETS_SCHEMA.EVENTOS, data.eventos, function(ev) {
     return [
       ev.id_evento || Utilities.getUuid(), ev.slug || "", ev.nome || "", ev.descricao || "", ev.imagem_url || "",
+      ev.produto_nome || "", Number(ev.produto_valor_mensal) || 0, Number(ev.produto_parcelas) || 1,
+      Number(ev.produto_valor) || 0, Boolean(ev.exibir_produto_publico),
+      Boolean(ev.solicitar_local), ev.label_local || "", JSON.stringify(ev.local_opcoes || []),
+      ev.modo_datas || (ev.recorrencia_ativa ? "RECORRENTE" : "PERIODO"),
+      Boolean(ev.recorrencia_ativa), JSON.stringify(ev.datas_especificas || []),
       ev.data_inicio || "", ev.data_fim || "", JSON.stringify(ev.dias_semana || []),
       Number(ev.duracao_minutos) || 60, Number(ev.intervalo_minutos) || 0, Number(ev.capacidade_padrao) || 1,
       ev.responsavel_id || "", ev.status || "PUBLICADO", ev.mensagem_confirmacao || "",
@@ -908,9 +933,10 @@ function syncDataToGoogleSheets(ss, data) {
   mirrorArrayToSheet(ss, "LEADS", SHEETS_SCHEMA.LEADS, data.leads, function(l) {
     return [
       l.id_lead || Utilities.getUuid(), l.nome || "", l.whatsapp || "", l.email || "",
-      l.empresa || "", l.cargo || "", l.origem_primeiro_evento || "",
+      l.empresa || "", l.cargo || "", l.local || "", l.status_cliente || "LEAD", l.origem_primeiro_evento || "",
       Number(l.total_agendamentos) || 0, l.data_ultimo_agendamento || "",
-      l.responsavel_id || "", l.observacoes || "", l.criado_em || "", l.atualizado_em || ""
+      l.responsavel_id || "", l.observacoes || "", Boolean(l.excluido), l.excluido_em || "",
+      l.criado_em || "", l.atualizado_em || ""
     ];
   });
 
@@ -932,7 +958,8 @@ function syncDataToGoogleSheets(ss, data) {
   mirrorArrayToSheet(ss, "CRM", SHEETS_SCHEMA.CRM, data.crm, function(c) {
     return [
       c.id_oportunidade || Utilities.getUuid(), c.id_lead || "", c.id_agendamento_origem || "",
-      c.titulo || "", c.estagio || "ENTRADA", c.sub_status || "FOLLOW",
+      c.titulo || "", c.produto_nome || "", Number(c.produto_valor_mensal) || 0, Number(c.produto_parcelas) || 1,
+      c.estagio || "ENTRADA", c.sub_status || "FOLLOW",
       Number(c.valor_estimado) || 0, Number(c.valor_fechado) || 0, c.responsavel_id || "",
       c.data_proximo_followup || "", c.motivo_perda || "", c.data_fechamento || "",
       Number(c.ordem_coluna) || 1, c.criado_em || "", c.atualizado_em || ""
@@ -1129,7 +1156,7 @@ function getOrCreateSheet(ss, sheetName, headers) {
       try { ss.deleteSheet(def); } catch (e) {}
     }
   }
-  if (headers && sheet.getLastRow() === 0) {
+  if (headers && (sheet.getLastRow() === 0 || sheet.getLastColumn() < headers.length)) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#0F172A").setFontColor("#FFFFFF");
     sheet.setFrozenRows(1);
