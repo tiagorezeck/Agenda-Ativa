@@ -23,7 +23,7 @@ export interface UsuarioEntity {
 
 export type StatusEvento = 'PUBLICADO' | 'PAUSADO' | 'ENCERRADO' | 'RASCUNHO';
 
-export type ModoDatasEvento = 'RECORRENTE' | 'PERIODO' | 'DATAS_ESPECIFICAS';
+export type ModoDatasEvento = 'SEMANAL' | 'MENSAL' | 'TOTAL' | 'DATAS_ESPECIFICAS' | 'RECORRENTE' | 'PERIODO';
 
 export interface EventoEntity {
   id_evento: string; // ex: EVT-001

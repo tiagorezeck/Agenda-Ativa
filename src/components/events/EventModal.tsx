@@ -71,9 +71,8 @@ export const EventModal: React.FC<EventModalProps> = ({
     Array.isArray(eventoParaEditar?.local_opcoes) ? eventoParaEditar!.local_opcoes!.join(', ') : ''
   );
 
-  // Modo de Datas & Recorrência
   const initialModoDatas: ModoDatasEvento = eventoParaEditar?.modo_datas
-    || (eventoParaEditar?.recorrencia_ativa ? 'RECORRENTE' : 'PERIODO');
+    || (eventoParaEditar?.recorrencia_ativa ? 'TOTAL' : 'SEMANAL');
   const [modoDatas, setModoDatas] = useState<ModoDatasEvento>(initialModoDatas);
   const [datasEspecificas, setDatasEspecificas] = useState<string[]>(
     Array.isArray(eventoParaEditar?.datas_especificas) ? [...eventoParaEditar!.datas_especificas!].sort() : []
@@ -174,7 +173,7 @@ export const EventModal: React.FC<EventModalProps> = ({
     }
 
     const idEvento = eventoParaEditar?.id_evento || `EVT-${gerarCodigoAleatorio(4)}`;
-    const isRecorrente = modoDatas === 'RECORRENTE';
+    const isRecorrente = modoDatas === 'SEMANAL' || modoDatas === 'MENSAL' || modoDatas === 'TOTAL';
     const isDatasEspecificas = modoDatas === 'DATAS_ESPECIFICAS';
 
     const localOpcoesArray = localOpcoesText
@@ -633,46 +632,67 @@ export const EventModal: React.FC<EventModalProps> = ({
             </h4>
 
             {/* Seletor de Modo de Datas */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
               <button
                 type="button"
                 onClick={() => {
-                  setModoDatas('RECORRENTE');
+                  setModoDatas('SEMANAL');
                   setFormErro(null);
                 }}
                 className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                  modoDatas === 'RECORRENTE'
+                  modoDatas === 'SEMANAL'
                     ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-500 text-orange-900 dark:text-orange-100 shadow-xs'
                     : 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
                 }`}
               >
                 <div className="flex items-center gap-1.5 text-xs font-bold">
                   <Repeat className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                  <span>Recorrente Semanal</span>
+                  <span>Semanal</span>
                 </div>
                 <p className="text-[11px] opacity-75 mt-1 leading-snug">
-                  Repete toda semana nos dias marcados (só para ao desativar).
+                  Aparece só as datas daquela semana.
                 </p>
               </button>
 
               <button
                 type="button"
                 onClick={() => {
-                  setModoDatas('PERIODO');
+                  setModoDatas('MENSAL');
                   setFormErro(null);
                 }}
                 className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                  modoDatas === 'PERIODO'
+                  modoDatas === 'MENSAL'
                     ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-500 text-orange-900 dark:text-orange-100 shadow-xs'
                     : 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
                 }`}
               >
                 <div className="flex items-center gap-1.5 text-xs font-bold">
                   <Calendar className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                  <span>Período Fechado</span>
+                  <span>Mensal</span>
                 </div>
                 <p className="text-[11px] opacity-75 mt-1 leading-snug">
-                  Funciona entre uma Data Inicial e uma Data Final nos dias escolhidos.
+                  Datas do mês inteiro separadas por semana.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setModoDatas('TOTAL');
+                  setFormErro(null);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  modoDatas === 'TOTAL'
+                    ? 'bg-orange-50 dark:bg-orange-950/40 border-orange-500 text-orange-900 dark:text-orange-100 shadow-xs'
+                    : 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 hover:border-neutral-400'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 text-xs font-bold">
+                  <Repeat className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                  <span>Total (Anual)</span>
+                </div>
+                <p className="text-[11px] opacity-75 mt-1 leading-snug">
+                  Todas as datas do ano separadas por meses.
                 </p>
               </button>
 
@@ -693,7 +713,7 @@ export const EventModal: React.FC<EventModalProps> = ({
                   <span>Datas Específicas</span>
                 </div>
                 <p className="text-[11px] opacity-75 mt-1 leading-snug">
-                  Escolha datas avulsas/distintas no calendário (ex: 17/11 e 19/11).
+                  Datas avulsas no calendário.
                 </p>
               </button>
             </div>

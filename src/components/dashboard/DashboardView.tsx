@@ -12,7 +12,8 @@ import {
   Percent,
   Clock,
   Filter,
-  BarChart3
+  BarChart3,
+  Award
 } from 'lucide-react';
 
 export const DashboardView: React.FC = () => {
@@ -47,6 +48,7 @@ export const DashboardView: React.FC = () => {
   // Cálculos de Indicadores Oficiais
   const totalAgendamentos = agendamentosFiltrados.length;
   const totalLeads = db.leads.filter((l) => !l.excluido).length;
+  const totalClientes = db.leads.filter((l) => l.status_cliente === 'CLIENTE').length;
 
   const vagasPreenchidas = agendamentosFiltrados.filter(
     (a) => a.status === 'CONFIRMADO' || a.status === 'REALIZADO'
@@ -183,8 +185,8 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
-      {/* Grid com os 9 Indicadores Oficiais */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-4">
+      {/* Grid com os 10 Indicadores Oficiais */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
         {/* 1. Total Agendamentos */}
         <div className="p-4 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl flex items-start justify-between shadow-sm transition-colors">
           <div>
@@ -310,6 +312,20 @@ export const DashboardView: React.FC = () => {
           </div>
           <div className="p-2 rounded-lg bg-orange-50 dark:bg-neutral-800 text-orange-600 dark:text-orange-400">
             <TrendingUp className="w-5 h-5" />
+          </div>
+        </div>
+
+        {/* 10. Clientes Convertidos */}
+        <div className="p-4 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl flex items-start justify-between shadow-sm transition-colors">
+          <div>
+            <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Clientes Convertidos</p>
+            <p className="text-2xl font-bold text-neutral-900 dark:text-white mt-1 font-mono tabular-nums">
+              {totalClientes}
+            </p>
+            <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1">Leads com venda fechada</p>
+          </div>
+          <div className="p-2 rounded-lg bg-emerald-50 dark:bg-neutral-800 text-emerald-600 dark:text-emerald-400">
+            <Award className="w-5 h-5" />
           </div>
         </div>
       </div>

@@ -131,7 +131,15 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     amanha.setDate(hoje.getDate() + 1);
     const amanhaIso = toLocalIsoDate(amanha);
 
-    if (eventoAtual.modo_datas === 'DATAS_ESPECIFICAS') {
+    const modo = eventoAtual.modo_datas || (eventoAtual.recorrencia_ativa ? 'TOTAL' : 'SEMANAL');
+    const diasPermitidos = Array.isArray(eventoAtual.dias_semana) && eventoAtual.dias_semana.length > 0
+      ? eventoAtual.dias_semana
+      : ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
+
+    const baseDateStr = eventoAtual.data_inicio || hojeIso;
+    const baseDate = new Date(baseDateStr + 'T00:00:00');
+
+    if (modo === 'DATAS_ESPECIFICAS') {
       const especificas = Array.isArray(eventoAtual.datas_especificas)
         ? [...eventoAtual.datas_especificas].filter(iso => iso >= hojeIso).sort()
         : [];
@@ -145,17 +153,60 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       return list;
     }
 
-    const isRecorrente = Boolean(eventoAtual.recorrencia_ativa) || eventoAtual.modo_datas === 'RECORRENTE';
-    const diasPermitidos = Array.isArray(eventoAtual.dias_semana) && eventoAtual.dias_semana.length > 0
-      ? eventoAtual.dias_semana
-      : ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
+    if (modo === 'SEMANAL') {
+      const dayOfWeek = baseDate.getDay();
+      const diffToMon = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+      const monday = new Date(baseDate);
+      monday.setDate(baseDate.getDate() + diffToMon);
 
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
+        const iso = toLocalIsoDate(d);
+        if (iso < hojeIso) continue;
+        const abrev = obterDiaSemanaAbrev(iso);
+        if (!diasPermitidos.includes(abrev)) continue;
+
+        let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+        if (iso === hojeIso) rotulo = 'Hoje';
+        else if (iso === amanhaIso) rotulo = 'Amanhã';
+
+        list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+      }
+      return list;
+    }
+
+    if (modo === 'MENSAL') {
+      const year = baseDate.getFullYear();
+      const month = baseDate.getMonth();
+      const firstDay = new Date(year, month, 1);
+      const lastDay = new Date(year, month + 1, 0);
+
+      const curr = new Date(firstDay);
+      while (curr <= lastDay && list.length < 35) {
+        const iso = toLocalIsoDate(curr);
+        if (iso >= hojeIso) {
+          const abrev = obterDiaSemanaAbrev(iso);
+          if (diasPermitidos.includes(abrev)) {
+            let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+            if (iso === hojeIso) rotulo = 'Hoje';
+            else if (iso === amanhaIso) rotulo = 'Amanhã';
+            list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+          }
+        }
+        curr.setDate(curr.getDate() + 1);
+      }
+      return list;
+    }
+
+    // TOTAL, RECORRENTE ou PERIODO
     const inicioStr = eventoAtual.data_inicio && eventoAtual.data_inicio > hojeIso
       ? eventoAtual.data_inicio
       : hojeIso;
-    const fimStr = isRecorrente ? '' : (eventoAtual.data_fim || '');
+    const isPer = modo === 'PERIODO';
+    const fimStr = isPer ? (eventoAtual.data_fim || '') : '';
 
-    for (let i = 0; i < 90; i++) {
+    for (let i = 0; i < 120; i++) {
       const d = new Date(hoje);
       d.setDate(hoje.getDate() + i);
       const iso = toLocalIsoDate(d);
@@ -171,7 +222,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       else if (iso === amanhaIso) rotulo = 'Amanhã';
 
       list.push({ dataIso: iso, diaSemana: abrev, rotulo });
-      if (list.length >= 24) break;
+      if (list.length >= 28) break;
     }
     return list;
   }, [eventoAtual]);

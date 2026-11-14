@@ -546,20 +546,47 @@ class StorageService {
     const evento = this.db.eventos.find(e => e.id_evento === idEvento);
     if (!evento) return [];
 
-    const isDatasEspecificas = evento.modo_datas === 'DATAS_ESPECIFICAS';
-    const isRecorrente = Boolean(evento.recorrencia_ativa) || evento.modo_datas === 'RECORRENTE';
+    const modo = evento.modo_datas || (evento.recorrencia_ativa ? 'TOTAL' : 'SEMANAL');
+    const isDatasEspecificas = modo === 'DATAS_ESPECIFICAS';
+    const diasPermitidos = Array.isArray(evento.dias_semana) && evento.dias_semana.length > 0
+      ? evento.dias_semana
+      : ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
+
+    const baseDateStr = evento.data_inicio || data;
+    const baseDate = new Date(baseDateStr + 'T00:00:00');
+    const checkDate = new Date(data + 'T00:00:00');
+    const formatIso = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
 
     if (isDatasEspecificas) {
       const listaDatas = Array.isArray(evento.datas_especificas) ? evento.datas_especificas : [];
       if (!listaDatas.includes(data)) return [];
-    } else {
+    } else if (modo === 'SEMANAL') {
+      const dayOfWeek = baseDate.getDay();
+      const diffToMon = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+      const monday = new Date(baseDate);
+      monday.setDate(baseDate.getDate() + diffToMon);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      const monIso = formatIso(monday);
+      const sunIso = formatIso(sunday);
+      if (data < monIso || data > sunIso) return [];
+    } else if (modo === 'MENSAL') {
+      if (checkDate.getFullYear() !== baseDate.getFullYear() || checkDate.getMonth() !== baseDate.getMonth()) return [];
+    } else if (modo === 'TOTAL' || evento.recorrencia_ativa || modo === 'RECORRENTE') {
+      if (checkDate.getFullYear() !== baseDate.getFullYear()) return [];
+    } else if (modo === 'PERIODO') {
       if (evento.data_inicio && data < evento.data_inicio) return [];
-      if (!isRecorrente && evento.data_fim && data > evento.data_fim) return [];
+      if (evento.data_fim && data > evento.data_fim) return [];
     }
 
     const diaSemanaAbrev = obterDiaSemanaAbrev(data);
-    if (!isDatasEspecificas && Array.isArray(evento.dias_semana) && evento.dias_semana.length > 0) {
-      if (!evento.dias_semana.includes(diaSemanaAbrev)) return [];
+    if (!isDatasEspecificas && !diasPermitidos.includes(diaSemanaAbrev)) {
+      return [];
     }
 
     const slotsDoEvento = this.db.horarios.filter((h) => {
