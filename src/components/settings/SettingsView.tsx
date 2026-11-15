@@ -12,6 +12,8 @@ import {
   createDriveCheckpoint,
   restoreDriveCheckpoint,
   configureDriveApiSecret,
+  validateGasUrlClient,
+  normalizeGasUrl,
   DriveConfig,
   RuntimeConfig,
   DriveFileEntry
@@ -94,6 +96,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   const [driveFiles, setDriveFiles] = useState<DriveFileEntry[]>([]);
   const [copiadoCodeGs, setCopiadoCodeGs] = useState(false);
   const [copiadoSetupGs, setCopiadoSetupGs] = useState(false);
+  const [copiadoGasConfig, setCopiadoGasConfig] = useState(false);
   const [salvoMsg, setSalvoMsg] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
@@ -104,6 +107,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   useEffect(() => {
     const unsubDrive = subscribeDriveConfig((cfg) => {
       setDriveCfg(cfg);
+      if (cfg.webappUrl && !gasUrl) {
+        setGasUrl(cfg.webappUrl);
+      }
     });
     const unsubRuntime = subscribeRuntimeConfig((rt) => {
       setRuntimeCfg(rt);
@@ -112,15 +118,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       setEngsegCfg(getEngsegConfig());
       setEngsegVerified(isEngsegSessionVerified());
     });
+    const unsubStorage = storage.subscribe(() => {
+      const latestDb = storage.getDatabase();
+      setEmpresaNome(latestDb.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || '');
+      setEmpresaLogo(latestDb.config.find(c => c.chave === 'EMPRESA_LOGO')?.valor || '');
+      setWhatsappContato(latestDb.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '');
+      setEmpresaEmail(latestDb.config.find(c => c.chave === 'EMPRESA_EMAIL')?.valor || '');
+      setEmpresaEndereco(latestDb.config.find(c => c.chave === 'EMPRESA_ENDERECO')?.valor || '');
+      setEmpresaCnpj(latestDb.config.find(c => c.chave === 'EMPRESA_CNPJ')?.valor || '');
+      setTermosLgpd(latestDb.config.find(c => c.chave === 'TERMOS_LGPD')?.valor || '');
+    });
     return () => {
       unsubDrive();
       unsubRuntime();
       unsubEngseg();
+      unsubStorage();
     };
   }, []);
 
   const handleSalvarEmpresa = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (gasUrl.trim()) {
+      const check = validateGasUrlClient(gasUrl);
+      if (!check.valid) {
+        setResultadoTeste({ success: false, message: check.error || 'URL do Google Apps Script inválida.' });
+        return;
+      }
+      saveDriveConfig({ webappUrl: check.normalizedUrl || gasUrl.trim(), apiToken: apiToken.trim() }, true);
+    }
+
     storage.updateConfig('EMPRESA_NOME', empresaNome.trim());
     storage.updateConfig('EMPRESA_LOGO', empresaLogo.trim());
     storage.updateConfig('WHATSAPP_CONTATO', whatsappContato.trim());
@@ -128,17 +154,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     storage.updateConfig('EMPRESA_ENDERECO', empresaEndereco.trim());
     storage.updateConfig('EMPRESA_CNPJ', empresaCnpj.trim());
     storage.updateConfig('TERMOS_LGPD', termosLgpd.trim());
-
-    saveDriveConfig({
-      webappUrl: gasUrl.trim(),
-      apiToken: apiToken.trim()
-    });
-
-    if (gasUrl.trim()) {
-      try {
-        await storage.pullFromCloud(true);
-      } catch {}
-    }
 
     setSalvoMsg(true);
     setTimeout(() => setSalvoMsg(false), 3000);
@@ -155,18 +170,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       });
       return;
     }
+
+    const rawUrl = gasUrl.trim();
+    if (rawUrl) {
+      const check = validateGasUrlClient(rawUrl);
+      if (!check.valid) {
+        setResultadoTeste({
+          success: false,
+          message: check.error || 'URL do Google Apps Script inválida.'
+        });
+        return;
+      }
+      if (check.normalizedUrl && check.normalizedUrl !== rawUrl) {
+        setGasUrl(check.normalizedUrl);
+      }
+    }
+
     setTestandoConexao(true);
     setResultadoTeste(null);
-    if (gasUrl.trim()) {
-      saveDriveConfig({ webappUrl: gasUrl.trim(), apiToken: apiToken.trim() });
-    }
-    const res = await GasApiClient.testConnection(gasUrl.trim() || undefined, apiToken.trim() || undefined);
+
+    const res = await GasApiClient.testConnection(
+      rawUrl ? normalizeGasUrl(rawUrl) : undefined,
+      apiToken.trim() || undefined
+    );
+
     if (res.success) {
       try {
         await storage.pullFromCloud(true);
+        const updatedDb = storage.getDatabase();
         setResultadoTeste({
           success: true,
-          message: `${res.message} Dados existentes na planilha carregados com sucesso!`
+          message: `${res.message} Base carregada do Sheets: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
         });
         onDataSynced?.();
       } catch (pullErr: any) {
@@ -187,7 +221,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       return;
     }
     if (gasUrl.trim()) {
-      saveDriveConfig({ webappUrl: gasUrl.trim(), apiToken: apiToken.trim() });
+      const check = validateGasUrlClient(gasUrl);
+      if (!check.valid) {
+        setResultadoTeste({ success: false, message: check.error || 'URL do Web App inválida.' });
+        return;
+      }
+      saveDriveConfig({ webappUrl: check.normalizedUrl || gasUrl.trim(), apiToken: apiToken.trim() }, true);
     }
     setSyncBusy('push');
     setResultadoTeste(null);
@@ -210,15 +249,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       return;
     }
     if (gasUrl.trim()) {
-      saveDriveConfig({ webappUrl: gasUrl.trim(), apiToken: apiToken.trim() });
+      const check = validateGasUrlClient(gasUrl);
+      if (!check.valid) {
+        setResultadoTeste({ success: false, message: check.error || 'URL do Web App inválida.' });
+        return;
+      }
+      saveDriveConfig({ webappUrl: check.normalizedUrl || gasUrl.trim(), apiToken: apiToken.trim() }, true);
     }
     setSyncBusy('pull');
     setResultadoTeste(null);
     try {
       await storage.pullFromCloud(true);
+      const updatedDb = storage.getDatabase();
       setResultadoTeste({
         success: true,
-        message: 'Dados puxados com sucesso do Motor DADOS DRIVE v2.0 (sem cache).'
+        message: `Dados carregados direto do Sheets (sem cache): ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
       });
       onDataSynced?.();
     } catch (err: any) {
@@ -726,6 +771,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                 {gasUrl.includes('/edit') && (
                   <div className="mt-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-200">
                     <strong>⚠️ URL do Editor detectada:</strong> Você colou o link da tela de edição (<code>/edit</code>). No Apps Script, clique em <strong>Implantar &gt; Gerenciar implantações</strong> e copie a <strong>URL do aplicativo da Web</strong> (que termina com <code>/exec</code>).
+                  </div>
+                )}
+                {gasUrl.trim().toLowerCase().endsWith('/dev') && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-200">
+                    <strong>⚠️ URL de Teste (/dev) detectada:</strong> Links <code>/dev</code> exigem login no editor. Copie a URL de produção terminada em <code>/exec</code> em <strong>Implantar &gt; Gerenciar implantações</strong>.
+                  </div>
+                )}
+
+                {gasUrl.trim() && validateGasUrlClient(gasUrl).valid && !runtimeCfg.cloudConfigured && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-[11px] text-blue-900 dark:text-blue-200 space-y-2">
+                    <p>
+                      <strong>Para links públicos funcionarem em qualquer navegador/dispositivo na Vercel:</strong> defina <code>GAS_WEBAPP_URL</code> nas variáveis de ambiente da Vercel ou salve esta URL em <code>src/config/gasConfig.ts</code> antes de publicar.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const clean = normalizeGasUrl(gasUrl);
+                        const snippet = `export const GLOBAL_GAS_CONFIG = {\n  WEBAPP_URL: '${clean}',\n  API_TOKEN: '${apiToken.trim()}'\n};\n`;
+                        try {
+                          await navigator.clipboard.writeText(snippet);
+                          setCopiadoGasConfig(true);
+                          setTimeout(() => setCopiadoGasConfig(false), 2000);
+                        } catch {}
+                      }}
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      {copiadoGasConfig ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiadoGasConfig ? 'Copiado!' : 'Copiar conteúdo para src/config/gasConfig.ts'}</span>
+                    </button>
                   </div>
                 )}
               </div>

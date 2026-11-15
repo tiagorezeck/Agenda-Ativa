@@ -231,17 +231,18 @@ export const EngsegTwoFactorGate: React.FC<EngsegTwoFactorGateProps> = ({
           </button>
         </form>
 
-        {/* Link para Página Pública sempre acessível */}
+        {/* Link para Página Pública sempre acessível em aba independente */}
         <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[11px] text-neutral-500 dark:text-neutral-400">
           <span>Clientes podem agendar livremente</span>
-          <button
-            type="button"
-            onClick={onOpenPublic}
+          <a
+            href="/agendar"
+            target="_blank"
+            rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-orange-600 dark:text-orange-400 hover:underline font-semibold cursor-pointer"
           >
             <span>Página Pública</span>
             <ExternalLink className="w-3 h-3" />
-          </button>
+          </a>
         </div>
       </div>
     </div>

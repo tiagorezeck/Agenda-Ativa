@@ -11,6 +11,22 @@
 // 5. Copie a URL /exec e cole em Configurações > Motor DADOS DRIVE v2.0.
 // =========================================================================
 
+// Função de teste para executar no editor e autorizar todas as permissões com 1 clique:
+function testConnection() {
+  var props = PropertiesService.getScriptProperties();
+  props.getProperty("API_SECRET");
+  var cache = CacheService.getScriptCache();
+  cache.put("AGENDA_ATIVA_PING_TEST", "ok", 10);
+  var folders = getAgendaAtivaFolders();
+  var ss = getOrCreateSpreadsheet(folders.data);
+  try { ScriptApp.getProjectTriggers(); } catch (eTrig) {}
+  var pingOut = doGet({ parameter: { action: "ping" } });
+  var pingText = pingOut && pingOut.getContent ? pingOut.getContent() : "";
+  Logger.log("Conexão e permissões ativas! Planilha: " + ss.getName() + " (" + ss.getUrl() + ")");
+  Logger.log("Resposta Ping: " + pingText);
+  return "OK: Conexão autorizada com sucesso! Planilha: " + ss.getUrl();
+}
+
 var ROOT_FOLDER_NAME = "Agenda Ativa";
 var DATA_FOLDER_NAME = "AppDatabase_Data";
 var BACKUP_FOLDER_NAME = "Backups";
@@ -1011,18 +1027,289 @@ function writeRowsToSheet(sheet, rows, colCount) {
 // =========================================================================
 // HELPERS DRIVE JSON, CACHE CHUNKED, UUID, SEGURANÇA E BACKUP
 // =========================================================================
+function parseJsonCell(val, fallback) {
+  if (val === undefined || val === null || val === "") return fallback;
+  if (typeof val !== "string") return val;
+  try { return JSON.parse(val); } catch (e) { return fallback; }
+}
+
+function readSheetObjects(ss, sheetName) {
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  var headers = values[0];
+  var list = [];
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var hasAny = false;
+    var obj = {};
+    for (var c = 0; c < headers.length; c++) {
+      var key = String(headers[c] || "").trim();
+      if (!key) continue;
+      var cellVal = row[c];
+      if (cellVal !== "" && cellVal !== null && cellVal !== undefined) hasAny = true;
+      obj[key] = cellVal;
+    }
+    if (hasAny) list.push(obj);
+  }
+  return list;
+}
+
+function readDatabaseFromSheets(folder) {
+  try {
+    var files = folder.getFilesByName(SPREADSHEET_BASE_NAME);
+    if (!files.hasNext()) return null;
+    var ss = SpreadsheetApp.openById(files.next().getId());
+
+    var eventosRaw = readSheetObjects(ss, "EVENTOS");
+    var horariosRaw = readSheetObjects(ss, "HORARIOS");
+    var configRaw = readSheetObjects(ss, "CONFIG");
+    var usuariosRaw = readSheetObjects(ss, "USUARIOS");
+    var bloqueiosRaw = readSheetObjects(ss, "BLOQUEIOS");
+    var agendamentosRaw = readSheetObjects(ss, "AGENDAMENTOS");
+    var leadsRaw = readSheetObjects(ss, "LEADS");
+    var camposRaw = readSheetObjects(ss, "CAMPOS_FORMULARIO");
+    var respostasRaw = readSheetObjects(ss, "RESPOSTAS");
+    var crmRaw = readSheetObjects(ss, "CRM");
+    var histCrmRaw = readSheetObjects(ss, "HISTORICO_CRM");
+    var tarefasRaw = readSheetObjects(ss, "TAREFAS");
+    var logsRaw = readSheetObjects(ss, "LOGS");
+
+    if (
+      eventosRaw.length === 0 &&
+      leadsRaw.length === 0 &&
+      agendamentosRaw.length === 0 &&
+      configRaw.length === 0
+    ) {
+      return null;
+    }
+
+    return {
+      config: configRaw.map(function(c) {
+        return {
+          chave: String(c.chave || ""),
+          valor: String(c.valor || ""),
+          descricao: String(c.descricao || ""),
+          atualizado_em: String(c.atualizado_em || "")
+        };
+      }),
+      usuarios: usuariosRaw.map(function(u) {
+        return {
+          id_usuario: String(u.id_usuario || ""),
+          nome: String(u.nome || ""),
+          email: String(u.email || ""),
+          perfil: String(u.perfil || "ADMIN"),
+          ativo: u.ativo !== false && String(u.ativo).toLowerCase() !== "false",
+          criado_em: String(u.criado_em || "")
+        };
+      }),
+      eventos: eventosRaw.map(function(ev) {
+        return {
+          id_evento: String(ev.id_evento || ""),
+          slug: String(ev.slug || ""),
+          nome: String(ev.nome || ""),
+          descricao: String(ev.descricao || ""),
+          imagem_url: ev.imagem_url ? String(ev.imagem_url) : undefined,
+          produto_nome: ev.produto_nome ? String(ev.produto_nome) : undefined,
+          produto_valor_mensal: Number(ev.produto_valor_mensal) || 0,
+          produto_parcelas: Number(ev.produto_parcelas) || 1,
+          produto_valor: Number(ev.produto_valor) || 0,
+          exibir_produto_publico: ev.exibir_produto_publico === true || String(ev.exibir_produto_publico).toLowerCase() === "true",
+          solicitar_local: ev.solicitar_local === true || String(ev.solicitar_local).toLowerCase() === "true",
+          label_local: ev.label_local ? String(ev.label_local) : undefined,
+          local_opcoes: parseJsonCell(ev.local_opcoes, []),
+          modo_datas: ev.modo_datas ? String(ev.modo_datas) : undefined,
+          recorrencia_ativa: ev.recorrencia_ativa === true || String(ev.recorrencia_ativa).toLowerCase() === "true",
+          datas_especificas: parseJsonCell(ev.datas_especificas, []),
+          data_inicio: String(ev.data_inicio || ""),
+          data_fim: String(ev.data_fim || ""),
+          dias_semana: parseJsonCell(ev.dias_semana, []),
+          duracao_minutos: Number(ev.duracao_minutos) || 60,
+          intervalo_minutos: Number(ev.intervalo_minutos) || 0,
+          capacidade_padrao: Number(ev.capacidade_padrao) || 1,
+          responsavel_id: String(ev.responsavel_id || "USR-001"),
+          status: String(ev.status || "PUBLICADO"),
+          mensagem_confirmacao: String(ev.mensagem_confirmacao || ""),
+          permite_cancelamento: ev.permite_cancelamento !== false && String(ev.permite_cancelamento).toLowerCase() !== "false",
+          horas_antecedencia_cancelamento: Number(ev.horas_antecedencia_cancelamento) || 24,
+          criado_em: String(ev.criado_em || ""),
+          atualizado_em: String(ev.atualizado_em || "")
+        };
+      }),
+      horarios: horariosRaw.map(function(h) {
+        return {
+          id_horario: String(h.id_horario || ""),
+          id_evento: String(h.id_evento || ""),
+          hora_inicio: String(h.hora_inicio || ""),
+          hora_fim: String(h.hora_fim || ""),
+          capacidade: Number(h.capacidade) || 1,
+          dias_aplicaveis: parseJsonCell(h.dias_aplicaveis, []),
+          ativo: h.ativo !== false && String(h.ativo).toLowerCase() !== "false"
+        };
+      }),
+      bloqueios: bloqueiosRaw.map(function(b) {
+        return {
+          id_bloqueio: String(b.id_bloqueio || ""),
+          id_evento: String(b.id_evento || "*"),
+          data: String(b.data || ""),
+          hora_inicio: String(b.hora_inicio || ""),
+          hora_fim: String(b.hora_fim || ""),
+          motivo: String(b.motivo || ""),
+          criado_por: String(b.criado_por || ""),
+          criado_em: String(b.criado_em || "")
+        };
+      }),
+      agendamentos: agendamentosRaw.map(function(a) {
+        return {
+          id_agendamento: String(a.id_agendamento || ""),
+          protocolo: String(a.protocolo || ""),
+          id_evento: String(a.id_evento || ""),
+          id_lead: String(a.id_lead || ""),
+          data_agendamento: String(a.data_agendamento || ""),
+          hora_inicio: String(a.hora_inicio || ""),
+          hora_fim: String(a.hora_fim || ""),
+          status: String(a.status || "CONFIRMADO"),
+          motivo_cancelamento: a.motivo_cancelamento ? String(a.motivo_cancelamento) : undefined,
+          cancelado_em: a.cancelado_em ? String(a.cancelado_em) : undefined,
+          criado_em: String(a.criado_em || "")
+        };
+      }),
+      leads: leadsRaw.map(function(l) {
+        return {
+          id_lead: String(l.id_lead || ""),
+          nome: String(l.nome || ""),
+          whatsapp: String(l.whatsapp || ""),
+          email: String(l.email || ""),
+          empresa: l.empresa ? String(l.empresa) : "",
+          cargo: l.cargo ? String(l.cargo) : "",
+          local: l.local ? String(l.local) : undefined,
+          status_cliente: String(l.status_cliente || "LEAD"),
+          origem_primeiro_evento: String(l.origem_primeiro_evento || ""),
+          total_agendamentos: Number(l.total_agendamentos) || 0,
+          data_ultimo_agendamento: String(l.data_ultimo_agendamento || ""),
+          responsavel_id: String(l.responsavel_id || "USR-001"),
+          observacoes: l.observacoes ? String(l.observacoes) : "",
+          excluido: l.excluido === true || String(l.excluido).toLowerCase() === "true",
+          excluido_em: l.excluido_em ? String(l.excluido_em) : undefined,
+          criado_em: String(l.criado_em || ""),
+          atualizado_em: String(l.atualizado_em || "")
+        };
+      }),
+      campos_formulario: camposRaw.map(function(f) {
+        return {
+          id_campo: String(f.id_campo || ""),
+          id_evento: String(f.id_evento || ""),
+          nome_campo: String(f.nome_campo || ""),
+          label: String(f.label || ""),
+          tipo: String(f.tipo || "TEXTO_CURTO"),
+          obrigatorio: f.obrigatorio === true || String(f.obrigatorio).toLowerCase() === "true",
+          placeholder: f.placeholder ? String(f.placeholder) : undefined,
+          opcoes: parseJsonCell(f.opcoes, undefined),
+          ordem: Number(f.ordem) || 1,
+          ativo: f.ativo !== false && String(f.ativo).toLowerCase() !== "false"
+        };
+      }),
+      respostas: respostasRaw.map(function(r) {
+        return {
+          id_resposta: String(r.id_resposta || ""),
+          id_agendamento: String(r.id_agendamento || ""),
+          id_lead: String(r.id_lead || ""),
+          id_campo: String(r.id_campo || ""),
+          valor: String(r.valor || ""),
+          criado_em: String(r.criado_em || "")
+        };
+      }),
+      crm: crmRaw.map(function(c) {
+        return {
+          id_oportunidade: String(c.id_oportunidade || ""),
+          id_lead: String(c.id_lead || ""),
+          id_agendamento_origem: c.id_agendamento_origem ? String(c.id_agendamento_origem) : undefined,
+          titulo: String(c.titulo || ""),
+          produto_nome: c.produto_nome ? String(c.produto_nome) : undefined,
+          produto_valor_mensal: Number(c.produto_valor_mensal) || 0,
+          produto_parcelas: Number(c.produto_parcelas) || 1,
+          estagio: String(c.estagio || "ENTRADA"),
+          sub_status: c.sub_status ? String(c.sub_status) : "FOLLOW",
+          valor_estimado: Number(c.valor_estimado) || 0,
+          valor_fechado: Number(c.valor_fechado) || 0,
+          responsavel_id: String(c.responsavel_id || "USR-001"),
+          data_proximo_followup: c.data_proximo_followup ? String(c.data_proximo_followup) : undefined,
+          motivo_perda: c.motivo_perda ? String(c.motivo_perda) : undefined,
+          data_fechamento: c.data_fechamento ? String(c.data_fechamento) : undefined,
+          ordem_coluna: Number(c.ordem_coluna) || 1,
+          criado_em: String(c.criado_em || ""),
+          atualizado_em: String(c.atualizado_em || "")
+        };
+      }),
+      historico_crm: histCrmRaw.map(function(hc) {
+        return {
+          id_historico: String(hc.id_historico || ""),
+          id_oportunidade: String(hc.id_oportunidade || ""),
+          tipo: String(hc.tipo || "NOTA"),
+          estagio_anterior: hc.estagio_anterior ? String(hc.estagio_anterior) : undefined,
+          estagio_novo: hc.estagio_novo ? String(hc.estagio_novo) : undefined,
+          descricao: String(hc.descricao || ""),
+          usuario_id: String(hc.usuario_id || "USR-001"),
+          criado_em: String(hc.criado_em || "")
+        };
+      }),
+      tarefas: tarefasRaw.map(function(t) {
+        return {
+          id_tarefa: String(t.id_tarefa || ""),
+          id_oportunidade: String(t.id_oportunidade || ""),
+          id_lead: t.id_lead ? String(t.id_lead) : undefined,
+          titulo: String(t.titulo || ""),
+          descricao: t.descricao ? String(t.descricao) : undefined,
+          data_vencimento: String(t.data_vencimento || ""),
+          concluida: t.concluida === true || String(t.concluida).toLowerCase() === "true",
+          responsavel_id: String(t.responsavel_id || "USR-001"),
+          criada_em: String(t.criada_em || ""),
+          concluida_em: t.concluida_em ? String(t.concluida_em) : undefined
+        };
+      }),
+      logs: logsRaw.map(function(lg) {
+        return {
+          id_log: String(lg.id_log || ""),
+          nivel: String(lg.nivel || "INFO"),
+          origem: String(lg.origem || "SHEETS"),
+          acao: String(lg.acao || ""),
+          detalhes: String(lg.detalhes || ""),
+          ip_ou_user_agent: lg.ip_ou_user_agent ? String(lg.ip_ou_user_agent) : undefined,
+          timestamp: String(lg.timestamp || "")
+        };
+      })
+    };
+  } catch (eSheet) {
+    return null;
+  }
+}
+
 function loadAuthoritativeDatabase(folder, bypassCache) {
   if (!bypassCache) {
     var cached = getFromCache(CACHE_KEY_ROOT);
     if (cached) {
-      try { return JSON.parse(cached) || {}; } catch (eC) {}
+      try {
+        var parsedCache = JSON.parse(cached);
+        if (parsedCache && Array.isArray(parsedCache.eventos)) return parsedCache;
+      } catch (eC) {}
     }
   }
   var rootFiles = folder.getFilesByName(ROOT_FILE_NAME);
   if (rootFiles.hasNext()) {
     try {
-      return JSON.parse(rootFiles.next().getBlob().getDataAsString("UTF-8")) || {};
+      var parsedFile = JSON.parse(rootFiles.next().getBlob().getDataAsString("UTF-8"));
+      if (parsedFile && typeof parsedFile === "object" && Array.isArray(parsedFile.eventos)) {
+        return parsedFile;
+      }
     } catch (eDb) {}
+  }
+  var fromSheets = readDatabaseFromSheets(folder);
+  if (fromSheets) {
+    try { upsertRootJsonFile(folder, JSON.stringify(fromSheets, null, 2)); } catch (eUp) {}
+    return fromSheets;
   }
   return {};
 }

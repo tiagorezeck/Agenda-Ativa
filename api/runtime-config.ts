@@ -1,10 +1,7 @@
-import { GLOBAL_GAS_CONFIG } from '../src/config/gasConfig';
-
 export default function handler(_req: any, res: any) {
   const effectiveUrl = (
     process.env.GAS_WEBAPP_URL ||
     process.env.VITE_GAS_WEBAPP_URL ||
-    GLOBAL_GAS_CONFIG.WEBAPP_URL ||
     ''
   ).trim();
   const hasServerGasUrl = Boolean(effectiveUrl);
@@ -16,7 +13,7 @@ export default function handler(_req: any, res: any) {
   res.status(200).json({
     cloudConfigured: hasServerGasUrl,
     webappUrl: effectiveUrl,
-    apiToken: GLOBAL_GAS_CONFIG.API_TOKEN || process.env.DRIVE_API_SECRET || '',
+    apiToken: process.env.DRIVE_API_SECRET || '',
     engsegRequired,
     engsegEmail
   });

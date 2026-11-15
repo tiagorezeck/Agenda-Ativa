@@ -271,14 +271,16 @@ export const EventListView: React.FC<EventListViewProps> = ({
                   </button>
 
                   {/* Abrir Página Pública */}
-                  <button
-                    onClick={() => onOpenPublicEvent(ev.slug)}
-                    title="Abrir página pública do cliente"
+                  <a
+                    href={`/agendar/${ev.slug}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Abrir página pública independente em nova aba"
                     className="px-3 py-2 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-950 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 rounded-lg text-xs font-medium text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white flex items-center gap-1.5 transition-colors"
                   >
                     <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
                     <span className="hidden sm:inline">Página Pública</span>
-                  </button>
+                  </a>
 
                   {/* Disponibilidade */}
                   <button

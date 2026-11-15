@@ -1,5 +1,3 @@
-import { GLOBAL_GAS_CONFIG } from '../src/config/gasConfig';
-
 export default function handler(req: any, res: any) {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -7,13 +5,12 @@ export default function handler(req: any, res: any) {
     const webappUrl = (
       process.env.GAS_WEBAPP_URL ||
       process.env.VITE_GAS_WEBAPP_URL ||
-      GLOBAL_GAS_CONFIG.WEBAPP_URL ||
       ''
     ).trim();
 
     return res.status(200).json({
       webappUrl,
-      apiToken: GLOBAL_GAS_CONFIG.API_TOKEN || process.env.DRIVE_API_SECRET || ''
+      apiToken: process.env.DRIVE_API_SECRET || ''
     });
   }
 

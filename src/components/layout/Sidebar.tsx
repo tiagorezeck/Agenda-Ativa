@@ -170,9 +170,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Footer / Página Pública / Status */}
       <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
-        <button
-          onClick={onOpenPublicView}
-          title="Abrir página pública do cliente"
+        <a
+          href={db.eventos[0]?.slug ? `/agendar/${db.eventos[0].slug}` : '/agendar'}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Abrir página pública independente em nova aba"
           className={`w-full flex items-center rounded-lg text-xs font-medium bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-900 dark:hover:bg-neutral-800 text-neutral-800 dark:text-neutral-200 border border-neutral-200 dark:border-neutral-700/80 transition-colors ${
             isExpanded ? 'justify-between px-3 py-2.5' : 'justify-center p-2.5'
           }`}
@@ -181,8 +183,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <ExternalLink className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400 shrink-0" />
             {isExpanded && <span className="truncate">Página Pública</span>}
           </span>
-          {isExpanded && <span className="text-[10px] text-neutral-400 font-mono">Abrir</span>}
-        </button>
+          {isExpanded && <span className="text-[10px] text-neutral-400 font-mono">Nova Aba</span>}
+        </a>
 
         {/* Database Status & Refresh */}
         <div className={`pt-1 flex items-center text-[11px] text-neutral-500 dark:text-neutral-400 ${

@@ -387,68 +387,71 @@ const INITIAL_DATABASE: SheetDatabase = {
   ]
 };
 
+function createEmptyCloudDatabase(): SheetDatabase {
+  return {
+    config: JSON.parse(JSON.stringify(INITIAL_DATABASE.config)),
+    usuarios: JSON.parse(JSON.stringify(INITIAL_DATABASE.usuarios)),
+    eventos: [],
+    horarios: [],
+    bloqueios: [],
+    agendamentos: [],
+    leads: [],
+    campos_formulario: [],
+    respostas: [],
+    crm: [],
+    historico_crm: [],
+    tarefas: [],
+    logs: []
+  };
+}
+
+export interface CloudSyncState {
+  bootstrapping: boolean;
+  loadedFromCloud: boolean;
+  syncing: boolean;
+  lastError: string | null;
+}
+
 class StorageService {
   private db: SheetDatabase;
+  private listeners = new Set<() => void>();
+  private cloudState: CloudSyncState = {
+    bootstrapping: false,
+    loadedFromCloud: false,
+    syncing: false,
+    lastError: null
+  };
 
   constructor() {
-    this.db = this.carregar();
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    this.db = isCloudActive()
+      ? createEmptyCloudDatabase()
+      : JSON.parse(JSON.stringify(INITIAL_DATABASE));
   }
 
-  private carregar(): SheetDatabase {
-    try {
-      const data = localStorage.getItem(STORAGE_KEY);
-      if (data) {
-        const parsed: SheetDatabase = JSON.parse(data);
-        // Migração suave de estágios do CRM (Follow-up / Stand By consolidado)
-        let alterado = false;
-        if (parsed.crm) {
-          parsed.crm.forEach(c => {
-            if (c.estagio === 'STAND_BY') {
-              c.estagio = 'FOLLOW_UP_STAND_BY';
-              c.sub_status = 'STAND';
-              alterado = true;
-            } else if (c.estagio === 'FOLLOW_UP') {
-              c.estagio = 'FOLLOW_UP_STAND_BY';
-              c.sub_status = 'FOLLOW';
-              alterado = true;
-            }
-          });
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
 
-          // Se não houver nenhum card em Follow-up/Stand By, adicione para demonstração
-          const hasFollowCard = parsed.crm.some(c => c.estagio === 'FOLLOW_UP_STAND_BY');
-          if (!hasFollowCard && INITIAL_DATABASE.crm.length > 2) {
-            parsed.crm.push(INITIAL_DATABASE.crm[2], INITIAL_DATABASE.crm[3]);
-            alterado = true;
-          }
-        }
-
-        // Garante que o evento inicial tenha imagem_url
-        if (parsed.eventos && parsed.eventos[0] && !parsed.eventos[0].imagem_url) {
-          parsed.eventos[0].imagem_url = 'https://images.unsplash.com/photo-1557804506-669a67965ba0?w=180&auto=format&fit=crop&q=80';
-          alterado = true;
-        }
-
-        // Garante que as configurações da empresa incluam logo e contatos
-        if (parsed.config) {
-          INITIAL_DATABASE.config.forEach(initConf => {
-            const existe = parsed.config.find(c => c.chave === initConf.chave);
-            if (!existe) {
-              parsed.config.push({ ...initConf });
-              alterado = true;
-            }
-          });
-        }
-
-        if (alterado) {
-          this.salvar(parsed, true);
-        }
-        return parsed;
+  private notifyListeners() {
+    this.listeners.forEach((fn) => {
+      try {
+        fn();
+      } catch (e) {
+        console.warn('Erro em listener do storage:', e);
       }
-    } catch (e) {
-      console.warn('Erro ao carregar do localStorage:', e);
-    }
-    this.salvar(INITIAL_DATABASE, true);
-    return JSON.parse(JSON.stringify(INITIAL_DATABASE));
+    });
+  }
+
+  public getCloudState(): CloudSyncState {
+    return { ...this.cloudState };
   }
 
   private autoSyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -460,19 +463,28 @@ class StorageService {
       clearTimeout(this.autoSyncTimer);
     }
     this.autoSyncTimer = setTimeout(() => {
-      pushToGoogleDrive(cfg.webappUrl || undefined, this.db, cfg.apiToken).catch((err) => {
-        console.warn('Auto-sync DADOS DRIVE v2.0 falhou:', err);
-      });
-    }, 1200);
+      this.cloudState = { ...this.cloudState, syncing: true, lastError: null };
+      this.notifyListeners();
+      pushToGoogleDrive(cfg.webappUrl || undefined, this.db, cfg.apiToken)
+        .then(() => {
+          this.cloudState = { ...this.cloudState, syncing: false, loadedFromCloud: true, lastError: null };
+          this.notifyListeners();
+        })
+        .catch((err) => {
+          console.warn('Auto-sync DADOS DRIVE v2.0 falhou:', err);
+          this.cloudState = {
+            ...this.cloudState,
+            syncing: false,
+            lastError: err?.message || 'Falha ao sincronizar com Google Sheets.'
+          };
+          this.notifyListeners();
+        });
+    }, 150);
   }
 
   private salvar(db: SheetDatabase, skipAutoSync: boolean = false) {
     this.db = db;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-    } catch (e) {
-      console.error('Erro ao salvar no localStorage:', e);
-    }
+    this.notifyListeners();
     if (!skipAutoSync) {
       this.scheduleAutoSync();
     }
@@ -483,23 +495,52 @@ class StorageService {
   }
 
   public replaceDatabase(newDb: SheetDatabase): SheetDatabase {
+    const base = createEmptyCloudDatabase();
     const merged: SheetDatabase = {
-      ...JSON.parse(JSON.stringify(INITIAL_DATABASE)),
-      ...newDb
+      config: Array.isArray(newDb.config) && newDb.config.length > 0 ? newDb.config : base.config,
+      usuarios: Array.isArray(newDb.usuarios) && newDb.usuarios.length > 0 ? newDb.usuarios : base.usuarios,
+      eventos: Array.isArray(newDb.eventos) ? newDb.eventos : [],
+      horarios: Array.isArray(newDb.horarios) ? newDb.horarios : [],
+      bloqueios: Array.isArray(newDb.bloqueios) ? newDb.bloqueios : [],
+      agendamentos: Array.isArray(newDb.agendamentos) ? newDb.agendamentos : [],
+      leads: Array.isArray(newDb.leads) ? newDb.leads : [],
+      campos_formulario: Array.isArray(newDb.campos_formulario) ? newDb.campos_formulario : [],
+      respostas: Array.isArray(newDb.respostas) ? newDb.respostas : [],
+      crm: Array.isArray(newDb.crm) ? newDb.crm : [],
+      historico_crm: Array.isArray(newDb.historico_crm) ? newDb.historico_crm : [],
+      tarefas: Array.isArray(newDb.tarefas) ? newDb.tarefas : [],
+      logs: Array.isArray(newDb.logs) ? newDb.logs : []
     };
     this.salvar(merged, true);
     return this.db;
   }
 
   public async bootstrapFromCloud(): Promise<boolean> {
+    this.cloudState = { ...this.cloudState, bootstrapping: true, lastError: null };
+    this.notifyListeners();
+
     await hydrateRuntimeConfig();
     notifyEngsegListeners();
-    if (!isCloudActive()) return false;
+
+    if (!isCloudActive()) {
+      this.cloudState = { ...this.cloudState, bootstrapping: false };
+      this.notifyListeners();
+      return false;
+    }
+
     try {
-      await this.pullFromCloud(false);
+      await this.pullFromCloud(true);
+      this.cloudState = { ...this.cloudState, bootstrapping: false, loadedFromCloud: true, lastError: null };
+      this.notifyListeners();
       return true;
-    } catch (err) {
-      console.warn('Bootstrap da nuvem ignorado (usando cache local):', err);
+    } catch (err: any) {
+      console.warn('Bootstrap da nuvem falhou:', err);
+      this.cloudState = {
+        ...this.cloudState,
+        bootstrapping: false,
+        lastError: err?.message || 'Erro ao carregar dados do Google Sheets.'
+      };
+      this.notifyListeners();
       return false;
     }
   }
@@ -509,23 +550,58 @@ class StorageService {
     if (!isCloudActive()) {
       throw new Error('URL do Motor DADOS DRIVE v2.0 não configurada.');
     }
-    return pushToGoogleDrive(cfg.webappUrl || undefined, this.db, cfg.apiToken);
+    this.cloudState = { ...this.cloudState, syncing: true, lastError: null };
+    this.notifyListeners();
+    try {
+      const res = await pushToGoogleDrive(cfg.webappUrl || undefined, this.db, cfg.apiToken);
+      this.cloudState = { ...this.cloudState, syncing: false, loadedFromCloud: true, lastError: null };
+      this.notifyListeners();
+      return res;
+    } catch (err: any) {
+      this.cloudState = { ...this.cloudState, syncing: false, lastError: err?.message || null };
+      this.notifyListeners();
+      throw err;
+    }
   }
 
-  public async pullFromCloud(nocache: boolean = false): Promise<SheetDatabase> {
+  public async pullFromCloud(nocache: boolean = true): Promise<SheetDatabase> {
     const cfg = getDriveConfig();
     if (!isCloudActive()) {
       throw new Error('URL do Motor DADOS DRIVE v2.0 não configurada.');
     }
-    const res = await fetchFromGoogleDrive(cfg.webappUrl || undefined, cfg.apiToken, nocache);
-    const cloudDb = (res && res.data && typeof res.data === 'object' && Array.isArray(res.data.eventos))
-      ? res.data
-      : res;
+    this.cloudState = { ...this.cloudState, syncing: true, lastError: null };
+    this.notifyListeners();
+    try {
+      const res = await fetchFromGoogleDrive(cfg.webappUrl || undefined, cfg.apiToken, nocache);
+      const cloudDb =
+        res && res.data && typeof res.data === 'object' && Array.isArray(res.data.eventos)
+          ? res.data
+          : res;
 
-    if (cloudDb && Array.isArray(cloudDb.eventos)) {
-      return this.replaceDatabase(cloudDb as SheetDatabase);
+      if (
+        cloudDb &&
+        typeof cloudDb === 'object' &&
+        (Array.isArray(cloudDb.eventos) ||
+          Array.isArray(cloudDb.leads) ||
+          Array.isArray(cloudDb.agendamentos) ||
+          Array.isArray(cloudDb.config))
+      ) {
+        const updated = this.replaceDatabase(cloudDb as SheetDatabase);
+        this.cloudState = { ...this.cloudState, syncing: false, loadedFromCloud: true, lastError: null };
+        this.notifyListeners();
+        return updated;
+      }
+
+      // Planilha nova/vazia conectada com sucesso: inicia limpa com dados da nuvem
+      const emptyClean = this.replaceDatabase(createEmptyCloudDatabase());
+      this.cloudState = { ...this.cloudState, syncing: false, loadedFromCloud: true, lastError: null };
+      this.notifyListeners();
+      return emptyClean;
+    } catch (err: any) {
+      this.cloudState = { ...this.cloudState, syncing: false, lastError: err?.message || null };
+      this.notifyListeners();
+      throw err;
     }
-    return this.db;
   }
 
   public resetToDemo(): SheetDatabase {
@@ -538,7 +614,7 @@ class StorageService {
   }
 
   public setGasWebAppUrl(url: string): void {
-    saveDriveConfig({ webappUrl: url.trim() });
+    saveDriveConfig({ webappUrl: url.trim() }, Boolean(url.trim()));
   }
 
   // --- Disponibilidade e Cálculo de Vagas em Tempo Real ---

@@ -13,6 +13,7 @@ import { PublicBookingView } from './components/public/PublicBookingView';
 import { SettingsView } from './components/settings/SettingsView';
 import { EngsegTwoFactorGate } from './components/security/EngsegTwoFactorGate';
 import { storage } from './services/storageService';
+import { isCloudActive } from './services/driveSyncService';
 import { getEngsegConfig, isEngsegSessionVerified, subscribeEngseg } from './services/engsegService';
 import { EventoEntity } from './types/database';
 
@@ -20,6 +21,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [isPublicView, setIsPublicView] = useState(false);
   const [publicSlug, setPublicSlug] = useState<string>('');
+  const [isThankYouClosedRoute, setIsThankYouClosedRoute] = useState(false);
 
   // Tema Claro e Escuro
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -69,39 +71,95 @@ export default function App() {
   const [qrCodeModalEvento, setQrCodeModalEvento] = useState<EventoEntity | null>(null);
   const [targetEventoId, setTargetEventoId] = useState<string | undefined>(undefined);
   const [refreshCounter, setRefreshCounter] = useState(0);
+  const [cloudBootstrapping, setCloudBootstrapping] = useState<boolean>(() => storage.getCloudState().bootstrapping);
 
-  // Detectar rota na URL (ex: /agendar/slug-do-evento) e sincronizar da nuvem na abertura
-  useEffect(() => {
-    const path = window.location.pathname;
-    if (path.startsWith('/agendar/')) {
-      const slug = path.replace('/agendar/', '').trim();
-      if (slug) {
-        setPublicSlug(slug);
-        setIsPublicView(true);
-      }
+  const syncRouteFromLocation = () => {
+    const rawPath = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+    if (rawPath === '/obrigado' || rawPath.endsWith('/obrigado')) {
+      const cleanSlug = rawPath
+        .replace(/^\/agendar\/?/, '')
+        .replace(/\/obrigado$/, '')
+        .replace(/^\/+/, '')
+        .trim();
+      setPublicSlug(cleanSlug ? decodeURIComponent(cleanSlug) : '');
+      setIsThankYouClosedRoute(true);
+      setIsPublicView(true);
+      return;
     }
 
-    storage.bootstrapFromCloud().then((updated) => {
-      if (updated) {
-        setRefreshCounter(c => c + 1);
-      }
+    if (rawPath === '/agendar' || rawPath.startsWith('/agendar/')) {
+      const cleanSlug = rawPath
+        .replace(/^\/agendar\/?/, '')
+        .trim();
+      setPublicSlug(decodeURIComponent(cleanSlug));
+      setIsThankYouClosedRoute(false);
+      setIsPublicView(true);
+    } else {
+      setIsThankYouClosedRoute(false);
+      setIsPublicView(false);
+    }
+  };
+
+  // Detectar rota na URL (ex: /agendar/slug-do-evento), assinar atualizações em tempo real do Sheets e escutar popstate
+  useEffect(() => {
+    syncRouteFromLocation();
+
+    const unsubStorage = storage.subscribe(() => {
+      setCloudBootstrapping(storage.getCloudState().bootstrapping);
+      setRefreshCounter((c) => c + 1);
     });
+
+    const handlePopState = () => {
+      syncRouteFromLocation();
+    };
+    window.addEventListener('popstate', handlePopState);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && isCloudActive()) {
+        storage.pullFromCloud(true).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    storage.bootstrapFromCloud();
+
+    return () => {
+      unsubStorage();
+      window.removeEventListener('popstate', handlePopState);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
   }, []);
 
-  const handleRefresh = () => {
-    setRefreshCounter(c => c + 1);
+  const handleRefresh = async () => {
+    if (isCloudActive()) {
+      try {
+        await storage.pullFromCloud(true);
+      } catch (e) {
+        console.warn('Falha ao atualizar do Sheets:', e);
+      }
+    }
+    setRefreshCounter((c) => c + 1);
   };
 
   const handleOpenPublicForEvent = (slug: string) => {
     setPublicSlug(slug);
+    setIsThankYouClosedRoute(false);
     setIsPublicView(true);
+    if (slug && window.location.pathname !== `/agendar/${slug}`) {
+      window.history.pushState({}, '', `/agendar/${slug}`);
+    }
   };
 
   const handleOpenPublicGeneral = () => {
     const db = storage.getDatabase();
-    const slug = db.eventos[0]?.slug || 'mentoria-comercial-estrategica';
+    const slug = db.eventos[0]?.slug || '';
     setPublicSlug(slug);
+    setIsThankYouClosedRoute(false);
     setIsPublicView(true);
+    const targetPath = slug ? `/agendar/${slug}` : '/agendar';
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState({}, '', targetPath);
+    }
   };
 
   const handleOpenFormBuilder = (eventoId: string) => {
@@ -124,17 +182,19 @@ export default function App() {
     setRefreshCounter(c => c + 1);
   };
 
-  // Se estiver na visualização pública do cliente (sempre aberta, sem exigir 2FA)
+  // Visualização pública 100% independente (sem acesso ao painel administrativo)
   if (isPublicView) {
     return (
       <PublicBookingView
-        key={refreshCounter}
         initialSlug={publicSlug}
+        initialThankYouClosed={isThankYouClosedRoute}
         theme={theme}
         onToggleTheme={toggleTheme}
-        onBackToAdmin={() => {
-          setIsPublicView(false);
-          window.history.pushState({}, '', '/');
+        onSelectSlug={(newSlug) => {
+          setPublicSlug(newSlug);
+          if (newSlug && window.location.pathname !== `/agendar/${newSlug}`) {
+            window.history.pushState({}, '', `/agendar/${newSlug}`);
+          }
         }}
       />
     );
@@ -181,6 +241,13 @@ export default function App() {
 
         {/* Viewport dos Módulos com Rolagem */}
         <main className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6">
+          {cloudBootstrapping && (
+            <div className="px-4 py-2.5 bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 rounded-xl text-xs text-orange-800 dark:text-orange-200 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-orange-500 animate-ping" />
+              <span>Sincronizando dados em tempo real diretamente do Google Sheets...</span>
+            </div>
+          )}
+
           {activeTab === 'dashboard' && <DashboardView key={refreshCounter} />}
 
           {activeTab === 'eventos' && (

@@ -156,13 +156,16 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="hidden sm:inline">Restaurar Teste</span>
         </button>
 
-        <button
-          onClick={onOpenPublic}
+        <a
+          href={db.eventos[0]?.slug ? `/agendar/${db.eventos[0].slug}` : '/agendar'}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Abrir página pública independente em nova aba"
           className="px-3 py-1.5 rounded-lg text-xs font-medium text-neutral-800 dark:text-neutral-200 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 border border-neutral-300 dark:border-neutral-700 transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
         >
           <ExternalLink className="w-3.5 h-3.5 text-orange-500 dark:text-orange-400" />
           <span>Ver Agendamento</span>
-        </button>
+        </a>
 
         {activeTab === 'eventos' && (
           <button

@@ -157,16 +157,16 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
               <span>WhatsApp</span>
             </a>
 
-            <button
-              onClick={() => {
-                onClose();
-                onOpenPublic(evento.slug);
-              }}
+            <a
+              href={`/agendar/${evento.slug}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={onClose}
               className="px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors"
             >
               <ExternalLink className="w-3.5 h-3.5" />
               <span>Abrir Página</span>
-            </button>
+            </a>
           </div>
         </div>
       </div>

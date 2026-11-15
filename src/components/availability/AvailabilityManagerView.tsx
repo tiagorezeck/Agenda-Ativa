@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { storage } from '../../services/storageService';
 import { formatarDataBR } from '../../utils/formatters';
 import {
@@ -25,6 +25,14 @@ export const AvailabilityManagerView: React.FC<AvailabilityManagerProps> = ({ in
   const [eventoSelecionado, setEventoSelecionado] = useState<string>(
     initialEventoId || (eventos[0]?.id_evento || '')
   );
+
+  useEffect(() => {
+    if (initialEventoId && eventos.some(e => e.id_evento === initialEventoId)) {
+      setEventoSelecionado(initialEventoId);
+    } else if ((!eventoSelecionado || !eventos.some(e => e.id_evento === eventoSelecionado)) && eventos.length > 0) {
+      setEventoSelecionado(eventos[0].id_evento);
+    }
+  }, [initialEventoId, eventos, eventoSelecionado]);
 
   const hoje = new Date().toISOString().slice(0, 10);
   const [dataSelecionada, setDataSelecionada] = useState<string>(hoje);

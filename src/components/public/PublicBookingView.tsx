@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { storage } from '../../services/storageService';
+import { isCloudActive } from '../../services/driveSyncService';
 import { BookingSubmissionPayload, BookingSuccessResult } from '../../types/api';
 import {
   formatarDataBR,
@@ -26,30 +27,39 @@ import {
   MapPin,
   MessageSquare,
   ShieldCheck,
-  Laptop,
-  Tablet,
-  Smartphone,
   Search,
   XCircle,
   CalendarClock,
   X,
-  Tag
+  Tag,
+  LogOut
 } from 'lucide-react';
 
 interface PublicBookingViewProps {
   initialSlug?: string;
-  onBackToAdmin?: () => void;
+  initialThankYouClosed?: boolean;
+  onSelectSlug?: (slug: string) => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
 }
 
 export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   initialSlug,
-  onBackToAdmin,
+  initialThankYouClosed = false,
+  onSelectSlug,
   theme = 'dark',
   onToggleTheme
 }) => {
+  const [, setSyncTick] = useState(0);
+
+  useEffect(() => {
+    const unsub = storage.subscribe(() => setSyncTick((t) => t + 1));
+    return unsub;
+  }, []);
+
   const db = storage.getDatabase();
+  const cloudState = storage.getCloudState();
+  const cloudConnected = isCloudActive();
   const eventos = db.eventos;
 
   // Seleção de Evento
@@ -58,14 +68,29 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   );
 
   useEffect(() => {
-    if (initialSlug && initialSlug !== selectedSlug) {
+    if (initialSlug !== undefined && initialSlug !== '' && initialSlug !== selectedSlug) {
       setSelectedSlug(initialSlug);
+    } else if (!selectedSlug && !initialSlug && eventos.length > 0) {
+      setSelectedSlug(eventos[0].slug);
     }
-  }, [initialSlug]);
+  }, [initialSlug, eventos, selectedSlug]);
+
+  const handleChangeSelectedSlug = (nextSlug: string) => {
+    setSelectedSlug(nextSlug);
+    setEtapaAtual(1);
+    setDataSelecionada('');
+    setSlotSelecionado(null);
+    setLocalResposta('');
+    setLocalOutro('');
+    onSelectSlug?.(nextSlug);
+  };
 
   const eventoAtual = useMemo(() => {
     if (selectedSlug) {
-      const match = eventos.find(e => e.slug === selectedSlug || e.id_evento === selectedSlug);
+      const normalizedSlug = selectedSlug.trim().toLowerCase();
+      const match = eventos.find(
+        e => e.slug.toLowerCase() === normalizedSlug || e.id_evento.toLowerCase() === normalizedSlug
+      );
       if (match) return match;
     }
     if (initialSlug) {
@@ -73,9 +98,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
     return eventos[0] || null;
   }, [eventos, selectedSlug, initialSlug]);
-
-  // Modo de visualização responsiva para testes rápidos (Notebook, Tablet, Mobile ou Auto)
-  const [devicePreview, setDevicePreview] = useState<'auto' | 'notebook' | 'tablet' | 'mobile'>('auto');
 
   // Informações da Empresa (Cadastradas em Configurações)
   const empresaNome = db.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || 'Instituto Comet';
@@ -101,10 +123,18 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   const [respostasCustom, setRespostasCustom] = useState<Record<string, string>>({});
   const [lgpdAceito, setLgpdAceito] = useState(true);
 
-  // Estado de Submissão e Resultado
+  // Estado de Submissão, Agradecimento (5s) e Encerramento
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [erroMsg, setErroMsg] = useState<string | null>(null);
   const [resultadoSucesso, setResultadoSucesso] = useState<BookingSuccessResult | null>(null);
+  const [thankYouSecondsLeft, setThankYouSecondsLeft] = useState<number>(5);
+  const [thankYouExited, setThankYouExited] = useState<boolean>(initialThankYouClosed);
+
+  useEffect(() => {
+    if (initialThankYouClosed) {
+      setThankYouExited(true);
+    }
+  }, [initialThankYouClosed]);
 
   // Autoatendimento por Protocolo (Consultar / Cancelar / Remarcar)
   const [selfServiceOpen, setSelfServiceOpen] = useState(false);
@@ -309,7 +339,10 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       };
 
       const result = await storage.createBookingWithCloud(payload);
+      setThankYouExited(false);
+      setThankYouSecondsLeft(5);
       setResultadoSucesso(result);
+      window.history.replaceState({}, '', `/agendar/${eventoAtual.slug}/obrigado`);
     } catch (err: any) {
       setErroMsg(err.message || 'Erro ao realizar agendamento.');
     } finally {
@@ -317,7 +350,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
   };
 
-  const handleNovoAgendamento = () => {
+  const handleConcluirESair = () => {
     setResultadoSucesso(null);
     setDataSelecionada('');
     setSlotSelecionado(null);
@@ -330,7 +363,26 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     setLocalOutro('');
     setRespostasCustom({});
     setErroMsg(null);
+    setThankYouExited(true);
+    window.history.replaceState({}, '', '/obrigado');
+    try {
+      window.close();
+    } catch {
+      // Navegadores podem bloquear window.close() se a aba não foi aberta externamente
+    }
   };
+
+  useEffect(() => {
+    if (!resultadoSucesso || thankYouExited) return;
+    if (thankYouSecondsLeft <= 0) {
+      handleConcluirESair();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setThankYouSecondsLeft((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [resultadoSucesso, thankYouExited, thankYouSecondsLeft]);
 
   const handleBuscarProtocolo = (e: React.FormEvent) => {
     e.preventDefault();
@@ -391,22 +443,51 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
   };
 
-  // Classes do container principal conforme modo de pré-visualização ou tela física
-  const containerWidthClass = useMemo(() => {
-    switch (devicePreview) {
-      case 'notebook':
-        return 'max-w-4xl w-full';
-      case 'tablet':
-        return 'max-w-2xl w-full';
-      case 'mobile':
-        return 'max-w-sm w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-3xl p-3 sm:p-5 shadow-2xl my-2';
-      default:
-        return 'max-w-3xl w-full';
-    }
-  }, [devicePreview]);
+  // --- TELA FINAL APÓS SAIR (SESSÃO ENCERRADA, SEM ACESSO AO SISTEMA) ---
+  if (thankYouExited) {
+    return (
+      <div className="min-h-screen bg-neutral-100 dark:bg-neutral-950 py-6 sm:py-12 px-4 sm:px-6 flex items-center justify-center text-neutral-900 dark:text-neutral-100 transition-colors">
+        <div className="max-w-md w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl sm:rounded-3xl p-6 sm:p-8 shadow-xl space-y-5 text-center">
+          <div className="w-16 h-16 rounded-full bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto shadow-sm">
+            <ShieldCheck className="w-9 h-9" />
+          </div>
 
-  // --- TELA DE SUCESSO E PROTOCOLO ---
+          <div className="space-y-2">
+            <h1 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
+              Obrigado pelo seu agendamento!
+            </h1>
+            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              Seu atendimento foi registrado com sucesso e esta página foi encerrada com segurança. Você já pode fechar esta guia.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                window.close();
+              } catch {
+                // Sem ação adicional se navegador bloquear fechamento automático
+              }
+            }}
+            className="w-full py-3 px-4 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Fechar esta página</span>
+          </button>
+
+          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 leading-relaxed">
+            {empresaNome} · Sessão independente encerrada. Caso o navegador não feche a guia automaticamente, basta fechá-la no X acima.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- PÁGINA DE AGRADECIMENTO COM SAÍDA AUTOMÁTICA EM 5 SEGUNDOS ---
   if (resultadoSucesso) {
+    const primeiroNome = nome.trim().split(/\s+/)[0] || 'Cliente';
+    const progressPercent = Math.max(0, Math.min(100, (thankYouSecondsLeft / 5) * 100));
     const linkWhatsAppConfirmacao = gerarLinkWhatsApp(
       db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '5511999998888',
       `Olá! Meu nome é *${nome}* e acabei de confirmar meu agendamento para o evento *${resultadoSucesso.evento_nome}* no dia *${formatarDataBR(resultadoSucesso.data)}* às *${resultadoSucesso.hora_inicio}*.\n\nMeu Protocolo é: *${resultadoSucesso.protocolo}*.`
@@ -419,12 +500,12 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             <CheckCircle2 className="w-8 h-8 sm:w-10 sm:h-10" />
           </div>
 
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             <h2 className="text-lg sm:text-xl font-bold tracking-tight">
-              Agendamento Confirmado!
+              Obrigado pelo seu agendamento, {primeiroNome}!
             </h2>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              Sua vaga foi reservada com sucesso no sistema.
+              Sua vaga foi reservada com sucesso. Guarde o protocolo abaixo para referência.
             </p>
           </div>
 
@@ -476,69 +557,79 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             <p className="leading-relaxed">{resultadoSucesso.mensagem_confirmacao}</p>
           </div>
 
+          {/* Barra de Contagem Regressiva (5 segundos) */}
+          <div className="p-3.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-neutral-600 dark:text-neutral-400">
+                Saindo automaticamente em:
+              </span>
+              <span className="font-mono font-bold text-orange-600 dark:text-orange-400">
+                {thankYouSecondsLeft}s
+              </span>
+            </div>
+            <div className="w-full h-1.5 bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 transition-all duration-1000 ease-linear"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+
           {/* Ações */}
-          <div className="space-y-2.5 pt-2">
-            <a
-              href={linkWhatsAppConfirmacao}
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all active:scale-[0.99]"
-            >
-              <Share2 className="w-4 h-4" />
-              <span>Confirmar pelo WhatsApp</span>
-            </a>
+          <div className="space-y-2.5 pt-1">
+            {empresaWhatsapp && (
+              <a
+                href={linkWhatsAppConfirmacao}
+                target="_blank"
+                rel="noreferrer"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all active:scale-[0.99]"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Enviar Comprovante pelo WhatsApp</span>
+              </a>
+            )}
 
             <button
-              onClick={handleNovoAgendamento}
-              className="w-full py-2.5 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5 active:scale-[0.99]"
+              type="button"
+              onClick={handleConcluirESair}
+              className="w-full py-2.5 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 active:scale-[0.99] cursor-pointer"
             >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Realizar Outro Agendamento</span>
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Concluir e Sair Agora</span>
             </button>
-
-            {onBackToAdmin && (
-              <button
-                onClick={onBackToAdmin}
-                className="text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white pt-2 block mx-auto underline transition-colors"
-              >
-                Voltar ao Painel Administrativo
-              </button>
-            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // --- FLUXO PRINCIPAL: PROGRESSIVE CARD WORKFLOW ---
+  // --- FLUXO PRINCIPAL: PÁGINA INDEPENDENTE DE AGENDAMENTO ---
   return (
     <div className="min-h-screen bg-neutral-100 dark:bg-neutral-950 py-4 sm:py-8 px-3 sm:px-6 flex flex-col items-center justify-start text-neutral-900 dark:text-neutral-100 transition-colors">
-      {/* Barra Superior com Controles e Alternador de Modos (Notebook / Tablet / Mobile) */}
-      <div className="w-full max-w-4xl mb-4 sm:mb-6 flex flex-wrap items-center justify-between gap-2.5 text-xs text-neutral-500 dark:text-neutral-400">
-        <div className="flex items-center gap-2">
-          {onBackToAdmin && (
-            <button
-              onClick={onBackToAdmin}
-              className="px-2.5 py-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white flex items-center gap-1.5 transition-colors font-medium shadow-xs"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Painel</span>
-            </button>
+      {/* Barra Superior Independente (Sem acesso ao sistema administrativo) */}
+      <div className="w-full max-w-3xl mb-4 sm:mb-6 flex flex-wrap items-center justify-between gap-2.5 text-xs text-neutral-500 dark:text-neutral-400">
+        <div className="flex items-center gap-2 min-w-0">
+          {empresaLogo ? (
+            <img
+              src={empresaLogo}
+              alt={empresaNome}
+              className="w-7 h-7 rounded-lg object-cover border border-neutral-200 dark:border-neutral-800 shrink-0"
+            />
+          ) : (
+            <div className="w-7 h-7 rounded-lg bg-orange-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+              {empresaNome.charAt(0).toUpperCase()}
+            </div>
           )}
+          <span className="font-semibold text-neutral-800 dark:text-neutral-200 truncate">
+            {empresaNome}
+          </span>
 
-          {/* Seletor de Evento */}
-          {eventos.length > 1 && (
+          {/* Seletor de Evento apenas quando acessado sem slug específico na URL */}
+          {!initialSlug && eventos.length > 1 && (
             <select
               value={selectedSlug}
-              onChange={(e) => {
-                setSelectedSlug(e.target.value);
-                setEtapaAtual(1);
-                setDataSelecionada('');
-                setSlotSelecionado(null);
-                setLocalResposta('');
-                setLocalOutro('');
-              }}
-              className="px-2.5 py-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-xs text-neutral-800 dark:text-neutral-200 max-w-[130px] sm:max-w-[200px] truncate shadow-xs focus:outline-none"
+              onChange={(e) => handleChangeSelectedSlug(e.target.value)}
+              className="ml-1 px-2.5 py-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-xs text-neutral-800 dark:text-neutral-200 max-w-[160px] sm:max-w-[220px] truncate shadow-xs focus:outline-none"
             >
               {eventos.map(ev => (
                 <option key={ev.slug} value={ev.slug}>
@@ -564,64 +655,13 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             <span>Meus Agendamentos</span>
           </button>
 
-          {/* Seletor de Dispositivo Responsivo */}
-          <div className="bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg p-0.5 flex items-center gap-0.5 shadow-xs">
-            <button
-              type="button"
-              onClick={() => setDevicePreview('notebook')}
-              title="Modo Notebook (Largura desktop)"
-              className={`p-1.5 rounded-md transition-colors ${
-                devicePreview === 'notebook'
-                  ? 'bg-orange-600 text-white shadow-xs'
-                  : 'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white'
-              }`}
-            >
-              <Laptop className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setDevicePreview('tablet')}
-              title="Modo Tablet (Largura média)"
-              className={`p-1.5 rounded-md transition-colors ${
-                devicePreview === 'tablet'
-                  ? 'bg-orange-600 text-white shadow-xs'
-                  : 'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white'
-              }`}
-            >
-              <Tablet className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setDevicePreview('mobile')}
-              title="Modo Mobile (Celular smartphone)"
-              className={`p-1.5 rounded-md transition-colors ${
-                devicePreview === 'mobile'
-                  ? 'bg-orange-600 text-white shadow-xs'
-                  : 'text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white'
-              }`}
-            >
-              <Smartphone className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setDevicePreview('auto')}
-              title="Modo Fluido Automático (100% da tela)"
-              className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors ${
-                devicePreview === 'auto'
-                  ? 'bg-neutral-200 dark:bg-neutral-800 text-neutral-900 dark:text-white'
-                  : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300'
-              }`}
-            >
-              Auto
-            </button>
-          </div>
-
           {/* Alternador de Tema Claro / Escuro */}
           {onToggleTheme && (
             <button
+              type="button"
               onClick={onToggleTheme}
               title={theme === 'dark' ? 'Mudar para Modo Claro' : 'Mudar para Modo Escuro'}
-              className="p-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors flex items-center gap-1 text-xs shadow-xs"
+              className="p-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors flex items-center gap-1 text-xs shadow-xs cursor-pointer"
             >
               {theme === 'dark' ? (
                 <>
@@ -639,32 +679,56 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
         </div>
       </div>
 
-      {/* Container Adaptável: Notebook / Tablet / Mobile */}
-      <div className={`space-y-4 sm:space-y-6 transition-all duration-300 ${containerWidthClass}`}>
+      {/* Container Principal Responsivo */}
+      <div className="space-y-4 sm:space-y-6 transition-all duration-300 max-w-3xl w-full">
         {!eventoAtual ? (
           <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl sm:rounded-3xl p-8 sm:p-12 text-center space-y-4 shadow-sm">
             <div className="w-12 h-12 rounded-full bg-orange-100 dark:bg-orange-950/60 border border-orange-200 dark:border-orange-800 text-orange-600 dark:text-orange-400 mx-auto flex items-center justify-center">
-              <Calendar className="w-6 h-6 animate-pulse" />
+              <Calendar className={`w-6 h-6 ${cloudState.bootstrapping ? 'animate-pulse' : ''}`} />
             </div>
-            <div className="space-y-1">
-              <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
-                Buscando agendamento "{selectedSlug}"...
-              </h2>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md mx-auto">
-                Buscando informações em tempo real no Google Sheets. Se a conexão ainda não foi sincronizada, certifique-se de configurar a URL do Web App no painel.
-              </p>
-            </div>
-            {eventos.length > 0 && (
+
+            {cloudState.bootstrapping ? (
+              <div className="space-y-1">
+                <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
+                  Carregando agendamento...
+                </h2>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md mx-auto">
+                  Buscando datas, horários e vagas disponíveis em tempo real.
+                </p>
+              </div>
+            ) : !cloudConnected ? (
+              <div className="space-y-2">
+                <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
+                  Agendamento temporariamente indisponível
+                </h2>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md mx-auto leading-relaxed">
+                  Não foi possível carregar a agenda no momento. Por favor, tente novamente em instantes ou entre em contato pelos canais abaixo.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
+                  {selectedSlug ? `Evento "${selectedSlug}" não encontrado` : 'Nenhum evento publicado no momento'}
+                </h2>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md mx-auto">
+                  {cloudState.lastError
+                    ? `Falha ao consultar Google Sheets: ${cloudState.lastError}`
+                    : 'Verifique se o evento foi salvo e publicado no painel conectado ao Google Sheets.'}
+                </p>
+              </div>
+            )}
+
+            {!cloudState.bootstrapping && !initialSlug && eventos.length > 0 && (
               <div className="pt-4 border-t border-neutral-100 dark:border-neutral-800 space-y-2">
                 <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium">
-                  Eventos atualmente disponíveis:
+                  Eventos disponíveis no momento:
                 </p>
                 <div className="flex flex-wrap gap-2 justify-center">
                   {eventos.map((ev) => (
                     <button
                       key={ev.id_evento}
                       type="button"
-                      onClick={() => setSelectedSlug(ev.slug)}
+                      onClick={() => handleChangeSelectedSlug(ev.slug)}
                       className="px-3 py-1.5 bg-neutral-100 dark:bg-neutral-800 hover:bg-orange-50 dark:hover:bg-orange-950 border border-neutral-200 dark:border-neutral-700 text-xs rounded-lg font-medium text-neutral-800 dark:text-neutral-200 transition-colors cursor-pointer"
                     >
                       {ev.nome}

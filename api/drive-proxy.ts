@@ -1,5 +1,3 @@
-import { GLOBAL_GAS_CONFIG } from '../src/config/gasConfig';
-
 const GET_ACTIONS = new Set([
   'ping',
   'test',
@@ -10,9 +8,14 @@ const GET_ACTIONS = new Set([
   'get_file'
 ]);
 
-function validateGasUrl(rawUrl: string): { valid: boolean; error?: string } {
+function normalizeGasUrl(rawUrl: string): string {
+  return rawUrl.trim().replace(/^(https:\/\/script\.google\.com\/macros)\/u\/\d+(\/s\/)/i, '$1$2');
+}
+
+function validateGasUrl(rawUrl: string): { valid: boolean; normalizedUrl?: string; error?: string } {
   try {
-    const parsed = new URL(rawUrl);
+    const normalized = normalizeGasUrl(rawUrl);
+    const parsed = new URL(normalized);
     if (parsed.protocol !== 'https:') {
       return { valid: false, error: 'A URL deve usar HTTPS.' };
     }
@@ -30,37 +33,54 @@ function validateGasUrl(rawUrl: string): { valid: boolean; error?: string } {
       };
     }
 
-    const path = parsed.pathname.toLowerCase();
-    if (path.includes('/library/')) {
+    const urlPath = parsed.pathname.toLowerCase();
+    if (urlPath.includes('/library/')) {
       return {
         valid: false,
         error:
           'Atenção: A URL informada é uma Biblioteca (/macros/library/...). Para conectar, use a "URL do aplicativo da Web" obtida em Implantar > Gerenciar implantações, que termina com "/exec" (exemplo: https://script.google.com/macros/s/AKfycb.../exec).'
       };
     }
-    if (path.includes('/edit')) {
+    if (urlPath.includes('/edit')) {
       return {
         valid: false,
         error:
           'Atenção: A URL informada é do editor (/edit). No Apps Script, clique em "Implantar" > "Gerenciar implantações" e copie a "URL do aplicativo da Web", que termina com "/exec".'
       };
     }
+    if (urlPath.endsWith('/dev')) {
+      return {
+        valid: false,
+        error:
+          'Atenção: A URL informada é de teste (/dev), que só funciona logado no editor. Em "Implantar > Gerenciar implantações", copie a URL de produção terminada em "/exec".'
+      };
+    }
 
-    return { valid: true };
+    return { valid: true, normalizedUrl: normalized };
   } catch {
     return { valid: false, error: 'URL malformada.' };
   }
 }
 
 export default async function handler(req: any, res: any) {
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 35000);
 
   try {
     const queryParams = (req.query || {}) as Record<string, unknown>;
     let bodyParams: Record<string, unknown> = {};
-    if (req.body && typeof req.body === 'object') {
+    if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
       bodyParams = req.body as Record<string, unknown>;
+    } else if (Buffer.isBuffer(req.body)) {
+      try {
+        bodyParams = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        bodyParams = {};
+      }
     } else if (typeof req.body === 'string' && req.body.trim()) {
       try {
         bodyParams = JSON.parse(req.body);
@@ -73,25 +93,24 @@ export default async function handler(req: any, res: any) {
     const envTargetUrl = (
       process.env.GAS_WEBAPP_URL ||
       process.env.VITE_GAS_WEBAPP_URL ||
-      GLOBAL_GAS_CONFIG.WEBAPP_URL ||
       ''
     ).trim();
-    const targetUrl = String(params.targetUrl || envTargetUrl || '').trim();
+    const rawTargetUrl = String(params.targetUrl || envTargetUrl || '').trim();
     const action =
       typeof params.action === 'string' && params.action.trim()
         ? params.action.trim()
         : 'save';
 
-    if (!targetUrl) {
+    if (!rawTargetUrl) {
       clearTimeout(timeout);
       return res.status(400).json({
         status: 'error',
         statusCode: 400,
-        message: 'URL do Web App ausente. Configure em Configurações ou defina GAS_WEBAPP_URL no Vercel.'
+        message: 'URL do Web App ausente. Configure em Configurações, em src/config/gasConfig.ts ou defina GAS_WEBAPP_URL no Vercel.'
       });
     }
 
-    const gasValidation = validateGasUrl(targetUrl);
+    const gasValidation = validateGasUrl(rawTargetUrl);
     if (!gasValidation.valid) {
       clearTimeout(timeout);
       return res.status(400).json({
@@ -100,6 +119,7 @@ export default async function handler(req: any, res: any) {
         message: gasValidation.error
       });
     }
+    const targetUrl = gasValidation.normalizedUrl || rawTargetUrl;
 
     const authHeader =
       typeof req.headers?.authorization === 'string'
@@ -140,15 +160,13 @@ export default async function handler(req: any, res: any) {
       fetchUrl = urlObj.toString();
       fetchOptions.method = 'GET';
       fetchOptions.headers = {
-        Accept: 'application/json, text/plain, */*',
-        ...(effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {})
+        Accept: 'application/json, text/plain, */*'
       };
     } else {
       fetchOptions.method = 'POST';
       fetchOptions.headers = {
         'Content-Type': 'text/plain;charset=utf-8',
-        Accept: 'application/json, text/plain, */*',
-        ...(effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {})
+        Accept: 'application/json, text/plain, */*'
       };
 
       const forwardPayload: Record<string, unknown> = {
@@ -175,7 +193,16 @@ export default async function handler(req: any, res: any) {
         status: 'error',
         statusCode: 502,
         message:
-          'O Google Apps Script retornou uma página HTML em vez de JSON. Verifique se a implantação está como "App da Web", executando como "Eu" e acesso para "Qualquer pessoa".'
+          'O Google Apps Script retornou uma página HTML em vez de JSON. Verifique em "Implantar > Gerenciar implantações" se está publicado como "App da Web", Executar como: "Eu" e Quem tem acesso: "Qualquer pessoa".'
+      });
+    }
+
+    if (trimmed.includes('A server error has occurred') || trimmed.includes('server error')) {
+      return res.status(502).json({
+        status: 'error',
+        statusCode: 502,
+        message:
+          'O Google Apps Script retornou "A server error has occurred". Causas mais comuns: (1) Após colar/editar o Code.gs, você precisa publicar uma NOVA VERSÃO em Implantar > Gerenciar implantações > Editar > Versão: Nova versão > Implantar; (2) Confirme "Executar como: Eu" e "Quem tem acesso: Qualquer pessoa"; (3) Confirme se a URL termina em "/exec" e não possui "/u/1/" ou "/dev".'
       });
     }
 

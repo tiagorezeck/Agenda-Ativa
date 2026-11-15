@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { storage } from '../../services/storageService';
 import { CampoFormularioEntity, TipoCampoFormulario } from '../../types/database';
 import { gerarCodigoAleatorio } from '../../utils/formatters';
@@ -35,6 +35,14 @@ export const FormBuilderView: React.FC<FormBuilderViewProps> = ({ initialEventoI
   const [eventoSelecionado, setEventoSelecionado] = useState<string>(
     initialEventoId || (eventos[0]?.id_evento || '')
   );
+
+  useEffect(() => {
+    if (initialEventoId && eventos.some(e => e.id_evento === initialEventoId)) {
+      setEventoSelecionado(initialEventoId);
+    } else if ((!eventoSelecionado || !eventos.some(e => e.id_evento === eventoSelecionado)) && eventos.length > 0) {
+      setEventoSelecionado(eventos[0].id_evento);
+    }
+  }, [initialEventoId, eventos, eventoSelecionado]);
 
   const [novoLabel, setNovoLabel] = useState('');
   const [novoTipo, setNovoTipo] = useState<TipoCampoFormulario>('TEXTO_CURTO');

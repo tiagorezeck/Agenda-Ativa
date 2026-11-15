@@ -3,7 +3,8 @@ import { GLOBAL_GAS_CONFIG } from '../config/gasConfig';
 /**
  * Agenda Ativa — Serviço Cliente DADOS DRIVE v2.0
  * Comunicação via proxy reverso /api/drive-proxy (Anti-CORS / Anti-Iframe)
- * Suporta URL configurada no painel (localStorage), GLOBAL_GAS_CONFIG ou variáveis de ambiente.
+ * Sem armazenamento em localStorage: conexão global via GLOBAL_GAS_CONFIG,
+ * variáveis de ambiente (GAS_WEBAPP_URL) ou configuração do servidor (/api/runtime-config).
  */
 
 export type SyncStatus = 'synced' | 'syncing' | 'error' | 'offline';
@@ -39,11 +40,88 @@ export interface DriveFileEntry {
 const DRIVE_CONFIG_KEY = 'AGENDA_ATIVA_DRIVE_CONFIG_V2';
 const LEGACY_GAS_URL_KEY = 'SISTEMA_AGENDAMENTO_GAS_WEBAPP_URL';
 
+export function normalizeGasUrl(rawUrl: string): string {
+  return (rawUrl || '')
+    .trim()
+    .replace(/^(https:\/\/script\.google\.com\/macros)\/u\/\d+(\/s\/)/i, '$1$2');
+}
+
+export function validateGasUrlClient(rawUrl: string): { valid: boolean; normalizedUrl?: string; error?: string } {
+  const normalized = normalizeGasUrl(rawUrl);
+  if (!normalized) return { valid: false, error: 'Informe a URL do Web App.' };
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.protocol !== 'https:') {
+      return { valid: false, error: 'A URL deve usar HTTPS.' };
+    }
+    const host = parsed.hostname.toLowerCase();
+    const isGasHost =
+      host === 'script.google.com' ||
+      host.endsWith('.script.google.com') ||
+      host === 'script.googleusercontent.com' ||
+      host.endsWith('.googleusercontent.com');
+    if (!isGasHost) {
+      return { valid: false, error: 'URL inválida. Informe uma URL oficial do Google Apps Script (script.google.com).' };
+    }
+    const p = parsed.pathname.toLowerCase();
+    if (p.includes('/library/')) {
+      return {
+        valid: false,
+        error:
+          'A URL informada é de Biblioteca (/macros/library/...). Use a "URL do aplicativo da Web" terminada em "/exec" em Implantar > Gerenciar implantações.'
+      };
+    }
+    if (p.includes('/edit')) {
+      return {
+        valid: false,
+        error:
+          'A URL informada é do editor (/edit). Copie a "URL do aplicativo da Web" terminada em "/exec" em Implantar > Gerenciar implantações.'
+      };
+    }
+    if (p.endsWith('/dev')) {
+      return {
+        valid: false,
+        error:
+          'A URL informada é de teste (/dev). Copie a URL de produção terminada em "/exec" em Implantar > Gerenciar implantações.'
+      };
+    }
+    return { valid: true, normalizedUrl: normalized };
+  } catch {
+    return { valid: false, error: 'URL malformada.' };
+  }
+}
+
+// Limpa chaves antigas do localStorage para garantir 100% de dependência apenas do servidor/Sheets
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem(DRIVE_CONFIG_KEY);
+    localStorage.removeItem(LEGACY_GAS_URL_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 const listeners = new Set<(cfg: DriveConfig) => void>();
 const runtimeListeners = new Set<(rt: RuntimeConfig) => void>();
 
+const initialGlobalUrl = (() => {
+  const raw = (import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim();
+  const check = raw ? validateGasUrlClient(raw) : { valid: false };
+  return check.valid ? (check.normalizedUrl || raw) : '';
+})();
+
+const initialGlobalToken = (GLOBAL_GAS_CONFIG.API_TOKEN || '').trim();
+
+let inMemoryDriveConfig: DriveConfig = {
+  webappUrl: initialGlobalUrl,
+  apiToken: initialGlobalToken,
+  autoSync: true,
+  syncStatus: initialGlobalUrl ? 'synced' : 'offline',
+  folderPath: 'Agenda Ativa/AppDatabase_Data'
+};
+
 let runtimeConfigCache: RuntimeConfig = {
-  cloudConfigured: Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim()),
+  cloudConfigured: Boolean(initialGlobalUrl),
   engsegRequired: String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
   engsegEmail: '',
   loaded: false
@@ -69,10 +147,16 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
       const res = await fetch('/api/runtime-config', { cache: 'no-store' });
       if (res.ok) {
         const json = await res.json();
+        const serverWebappUrl = typeof json.webappUrl === 'string' ? json.webappUrl.trim() : '';
+        const serverApiToken = typeof json.apiToken === 'string' ? json.apiToken.trim() : '';
+
+        const candidateUrl = serverWebappUrl || initialGlobalUrl;
+        const urlCheck = candidateUrl ? validateGasUrlClient(candidateUrl) : { valid: false };
+        const validUrl = urlCheck.valid ? (urlCheck.normalizedUrl || candidateUrl) : '';
+        const effectiveToken = serverApiToken || initialGlobalToken;
+
         runtimeConfigCache = {
-          cloudConfigured:
-            Boolean(json.cloudConfigured) ||
-            Boolean((import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim()),
+          cloudConfigured: Boolean(json.cloudConfigured && validUrl) || Boolean(validUrl),
           engsegRequired:
             Boolean(json.engsegRequired) ||
             String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
@@ -80,16 +164,13 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
           loaded: true
         };
 
-        const serverWebappUrl = typeof json.webappUrl === 'string' ? json.webappUrl.trim() : '';
-        const serverApiToken = typeof json.apiToken === 'string' ? json.apiToken.trim() : '';
-        const effectiveServerUrl = serverWebappUrl || GLOBAL_GAS_CONFIG.WEBAPP_URL.trim();
-        const effectiveServerToken = serverApiToken || GLOBAL_GAS_CONFIG.API_TOKEN.trim();
-
-        if (effectiveServerUrl) {
-          const currentLocal = getDriveConfig();
-          if (!currentLocal.webappUrl.trim()) {
-            saveDriveConfig({ webappUrl: effectiveServerUrl, ...(effectiveServerToken ? { apiToken: effectiveServerToken } : {}) });
-          }
+        if (validUrl && !inMemoryDriveConfig.webappUrl) {
+          inMemoryDriveConfig = {
+            ...inMemoryDriveConfig,
+            webappUrl: validUrl,
+            apiToken: effectiveToken || inMemoryDriveConfig.apiToken,
+            syncStatus: 'synced'
+          };
         }
       } else {
         runtimeConfigCache = { ...runtimeConfigCache, loaded: true };
@@ -106,93 +187,56 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
 }
 
 export function isCloudActive(): boolean {
-  const cfg = getDriveConfig();
   return Boolean(
-    cfg.webappUrl.trim() ||
-      GLOBAL_GAS_CONFIG.WEBAPP_URL.trim() ||
-      (import.meta.env.VITE_GAS_WEBAPP_URL || '').trim() ||
+    inMemoryDriveConfig.webappUrl.trim() ||
+      initialGlobalUrl ||
       runtimeConfigCache.cloudConfigured
   );
 }
 
 export function getDriveConfig(): DriveConfig {
-  const globalGasUrl = (import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim();
-  const globalToken = (GLOBAL_GAS_CONFIG.API_TOKEN || '').trim();
-
-  try {
-    const raw = localStorage.getItem(DRIVE_CONFIG_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as DriveConfig;
-      const effectiveUrl =
-        parsed.webappUrl || localStorage.getItem(LEGACY_GAS_URL_KEY) || globalGasUrl || '';
-      const effectiveToken = parsed.apiToken || globalToken || '';
-      const active = Boolean(effectiveUrl || runtimeConfigCache.cloudConfigured);
-      return {
-        webappUrl: effectiveUrl,
-        apiToken: effectiveToken,
-        autoSync: parsed.autoSync ?? true,
-        syncStatus: active ? (parsed.syncStatus && parsed.syncStatus !== 'offline' ? parsed.syncStatus : 'synced') : 'offline',
-        lastSyncTimestamp: parsed.lastSyncTimestamp,
-        spreadsheetUrl: parsed.spreadsheetUrl,
-        spreadsheetName: parsed.spreadsheetName,
-        exportXlsxUrl: parsed.exportXlsxUrl,
-        folderPath: parsed.folderPath || 'Agenda Ativa/AppDatabase_Data'
-      };
-    }
-  } catch (e) {
-    console.warn('Erro ao ler DriveConfig:', e);
-  }
-
-  const legacyUrl = localStorage.getItem(LEGACY_GAS_URL_KEY) || globalGasUrl || '';
-  const active = Boolean(legacyUrl || runtimeConfigCache.cloudConfigured);
-  return {
-    webappUrl: legacyUrl,
-    apiToken: globalToken,
-    autoSync: true,
-    syncStatus: active ? 'synced' : 'offline',
-    folderPath: 'Agenda Ativa/AppDatabase_Data'
-  };
+  return { ...inMemoryDriveConfig };
 }
 
-export function saveDriveConfig(partial: Partial<DriveConfig>): DriveConfig {
-  const current = getDriveConfig();
+export function saveDriveConfig(
+  partial: Partial<DriveConfig>,
+  persistToServer: boolean = false
+): DriveConfig {
   const next: DriveConfig = {
-    ...current,
+    ...inMemoryDriveConfig,
     ...partial
   };
+
   if (partial.webappUrl !== undefined) {
-    localStorage.setItem(LEGACY_GAS_URL_KEY, partial.webappUrl.trim());
-    next.webappUrl = partial.webappUrl.trim();
-    if (!next.webappUrl && !runtimeConfigCache.cloudConfigured) {
+    const clean = normalizeGasUrl(partial.webappUrl);
+    next.webappUrl = clean;
+    if (!clean && !runtimeConfigCache.cloudConfigured) {
       next.syncStatus = 'offline';
     }
   }
-  try {
-    localStorage.setItem(DRIVE_CONFIG_KEY, JSON.stringify(next));
-  } catch (e) {
-    console.error('Erro ao salvar DriveConfig:', e);
+
+  inMemoryDriveConfig = next;
+
+  if (persistToServer) {
+    const urlValid = !next.webappUrl || validateGasUrlClient(next.webappUrl).valid;
+    if (urlValid) {
+      if (next.webappUrl) {
+        runtimeConfigCache = { ...runtimeConfigCache, cloudConfigured: true };
+        runtimeListeners.forEach((fn) => fn(runtimeConfigCache));
+      }
+      fetch('/api/server-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          webappUrl: next.webappUrl,
+          apiToken: next.apiToken || ''
+        })
+      }).catch(() => {});
+    }
   }
 
-  fetch('/api/server-config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      webappUrl: next.webappUrl,
-      apiToken: next.apiToken || ''
-    })
-  }).catch(() => {});
-
-  listeners.forEach((fn) => fn(next));
-  return next;
-}
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('storage', (e) => {
-    if (e.key === DRIVE_CONFIG_KEY || e.key === LEGACY_GAS_URL_KEY) {
-      const updatedCfg = getDriveConfig();
-      listeners.forEach((fn) => fn(updatedCfg));
-    }
-  });
+  listeners.forEach((fn) => fn(getDriveConfig()));
+  return getDriveConfig();
 }
 
 export function subscribeDriveConfig(listener: (cfg: DriveConfig) => void): () => void {
@@ -209,13 +253,42 @@ export const executeDriveRequest = async <T = any>(payload: {
   slug?: string;
   nocache?: boolean;
 }): Promise<T> => {
+  const resolvedTarget = (payload.targetUrl || inMemoryDriveConfig.webappUrl || initialGlobalUrl || '').trim();
+  const resolvedToken = (payload.apiToken ?? inMemoryDriveConfig.apiToken ?? initialGlobalToken ?? '').trim();
+
+  const cleanPayload = {
+    ...payload,
+    ...(resolvedTarget ? { targetUrl: resolvedTarget } : {}),
+    ...(resolvedToken ? { apiToken: resolvedToken } : {})
+  };
+
+  if (cleanPayload.targetUrl) {
+    const check = validateGasUrlClient(cleanPayload.targetUrl);
+    if (!check.valid) {
+      throw new Error(check.error || 'URL do Google Apps Script inválida.');
+    }
+    cleanPayload.targetUrl = check.normalizedUrl || cleanPayload.targetUrl.trim();
+  }
+
   const res = await fetch('/api/drive-proxy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(cleanPayload)
   });
 
-  const data = await res.json();
+  const text = await res.text();
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    if (text.includes('A server error has occurred') || text.includes('server error')) {
+      throw new Error(
+        'O servidor proxy ou o Google Apps Script retornou "A server error has occurred". Se estiver na Vercel, faça o Redeploy com a versão atualizada do projeto e verifique se a URL do Apps Script termina em "/exec", com "Executar como: Eu" e "Quem tem acesso: Qualquer pessoa".'
+      );
+    }
+    throw new Error(text || `Falha na sincronização (HTTP ${res.status}).`);
+  }
+
   if (!res.ok || data.status === 'error' || data.status === 'unauthorized' || data.success === false) {
     throw new Error(data.message || data.error || `Falha na sincronização (HTTP ${res.status}).`);
   }
@@ -224,23 +297,28 @@ export const executeDriveRequest = async <T = any>(payload: {
 
 /**
  * Testar Conexão / Ping (Motor DADOS DRIVE v2.0)
+ * Só persiste a URL no servidor após o Ping confirmar sucesso!
  */
 export const testDriveConnection = async (url?: string, token?: string) => {
+  const normalizedUrl = url ? normalizeGasUrl(url) : undefined;
   const res = await executeDriveRequest({
-    targetUrl: url || undefined,
+    targetUrl: normalizedUrl || undefined,
     action: 'ping',
     apiToken: token
   });
 
-  saveDriveConfig({
-    ...(url ? { webappUrl: url } : {}),
-    ...(token !== undefined ? { apiToken: token } : {}),
-    syncStatus: 'synced',
-    spreadsheetUrl: res.spreadsheetUrl,
-    spreadsheetName: res.spreadsheetName,
-    exportXlsxUrl: res.exportXlsxUrl,
-    folderPath: res.folder || 'Agenda Ativa/AppDatabase_Data'
-  });
+  saveDriveConfig(
+    {
+      ...(normalizedUrl ? { webappUrl: normalizedUrl } : {}),
+      ...(token !== undefined ? { apiToken: token } : {}),
+      syncStatus: 'synced',
+      spreadsheetUrl: res.spreadsheetUrl,
+      spreadsheetName: res.spreadsheetName,
+      exportXlsxUrl: res.exportXlsxUrl,
+      folderPath: res.folder || 'Agenda Ativa/AppDatabase_Data'
+    },
+    Boolean(normalizedUrl)
+  );
 
   return res;
 };
@@ -272,7 +350,7 @@ export const pushToGoogleDrive = async (url: string | undefined, dbData: any, to
 };
 
 /**
- * Puxar dados da Nuvem (Cache <100ms ou Drive JSON)
+ * Puxar dados da Nuvem (Cache <100ms ou Drive JSON / Sheets)
  */
 export const fetchFromGoogleDrive = async (
   url: string | undefined,
