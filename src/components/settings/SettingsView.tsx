@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { storage } from '../../services/storageService';
 import { GasApiClient } from '../../services/gasApiClient';
 import {
@@ -92,6 +92,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   const [testandoConexao, setTestandoConexao] = useState(false);
   const [syncBusy, setSyncBusy] = useState<'push' | 'pull' | 'secret' | 'checkpoint' | 'list' | 'restore' | null>(null);
   const [resultadoTeste, setResultadoTeste] = useState<{ success: boolean; message: string } | null>(null);
+  const lastAutoConnectedUrlRef = useRef<string>(driveCfg.webappUrl || '');
 
   const [driveFiles, setDriveFiles] = useState<DriveFileEntry[]>([]);
   const [copiadoCodeGs, setCopiadoCodeGs] = useState(false);
@@ -162,8 +163,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
 
   const hasAnyCloudUrl = () => Boolean(gasUrl.trim() || isCloudActive());
 
-  const handleTestarConexao = async () => {
-    if (!hasAnyCloudUrl()) {
+  const executarConexaoDrive = async (explicitUrl?: string) => {
+    const rawUrl = (explicitUrl !== undefined ? explicitUrl : gasUrl).trim();
+    if (!rawUrl && !isCloudActive()) {
       setResultadoTeste({
         success: false,
         message: 'Informe a URL da implantação do Apps Script para testar (ou defina GAS_WEBAPP_URL no Vercel).'
@@ -171,7 +173,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       return;
     }
 
-    const rawUrl = gasUrl.trim();
+    let normalizedTarget = rawUrl;
     if (rawUrl) {
       const check = validateGasUrlClient(rawUrl);
       if (!check.valid) {
@@ -181,16 +183,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
         });
         return;
       }
-      if (check.normalizedUrl && check.normalizedUrl !== rawUrl) {
-        setGasUrl(check.normalizedUrl);
+      normalizedTarget = check.normalizedUrl || normalizeGasUrl(rawUrl);
+      if (normalizedTarget !== rawUrl) {
+        setGasUrl(normalizedTarget);
       }
+      lastAutoConnectedUrlRef.current = normalizedTarget;
     }
 
     setTestandoConexao(true);
     setResultadoTeste(null);
 
     const res = await GasApiClient.testConnection(
-      rawUrl ? normalizeGasUrl(rawUrl) : undefined,
+      normalizedTarget || undefined,
       apiToken.trim() || undefined
     );
 
@@ -200,7 +204,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
         const updatedDb = storage.getDatabase();
         setResultadoTeste({
           success: true,
-          message: `${res.message} Base carregada do Sheets: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
+          message: `${res.message} Drive conectado automaticamente! Base carregada: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
         });
         onDataSynced?.();
       } catch (pullErr: any) {
@@ -214,6 +218,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     }
     setTestandoConexao(false);
   };
+
+  const handleTestarConexao = () => executarConexaoDrive();
+
+  // Reconhecimento automático ao colar/digitar uma URL /exec válida diferente da atual
+  useEffect(() => {
+    const trimmed = gasUrl.trim();
+    if (!trimmed) return;
+    const check = validateGasUrlClient(trimmed);
+    if (!check.valid) return;
+    const normalized = check.normalizedUrl || normalizeGasUrl(trimmed);
+    if (!normalized.toLowerCase().endsWith('/exec')) return;
+    if (normalized === lastAutoConnectedUrlRef.current || normalized === driveCfg.webappUrl) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      executarConexaoDrive(normalized);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [gasUrl, driveCfg.webappUrl]);
 
   const handlePushCloud = async () => {
     if (!hasAnyCloudUrl()) {
@@ -779,27 +803,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                   </div>
                 )}
 
-                {gasUrl.trim() && validateGasUrlClient(gasUrl).valid && !runtimeCfg.cloudConfigured && (
-                  <div className="mt-2 p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-[11px] text-blue-900 dark:text-blue-200 space-y-2">
+                {gasUrl.trim() && validateGasUrlClient(gasUrl).valid && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-2">
                     <p>
-                      <strong>Para links públicos funcionarem em qualquer navegador/dispositivo na Vercel:</strong> defina <code>GAS_WEBAPP_URL</code> nas variáveis de ambiente da Vercel ou salve esta URL em <code>src/config/gasConfig.ts</code> antes de publicar.
+                      <strong>Modo Multi-Drive Automático Ativo:</strong> Ao colar qualquer URL válida aqui, o sistema conecta e carrega os dados da planilha automaticamente. Todos os links públicos e QR Codes gerados já saem vinculados a este Drive (<code>?d=...</code>), funcionando em qualquer celular ou navegador na Vercel sem precisar configurar variáveis.
                     </p>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const clean = normalizeGasUrl(gasUrl);
-                        const snippet = `export const GLOBAL_GAS_CONFIG = {\n  WEBAPP_URL: '${clean}',\n  API_TOKEN: '${apiToken.trim()}'\n};\n`;
-                        try {
-                          await navigator.clipboard.writeText(snippet);
-                          setCopiadoGasConfig(true);
-                          setTimeout(() => setCopiadoGasConfig(false), 2000);
-                        } catch {}
-                      }}
-                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer"
-                    >
-                      {copiadoGasConfig ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                      <span>{copiadoGasConfig ? 'Copiado!' : 'Copiar conteúdo para src/config/gasConfig.ts'}</span>
-                    </button>
+                    {!runtimeCfg.cloudConfigured && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const clean = normalizeGasUrl(gasUrl);
+                          const snippet = `export const GLOBAL_GAS_CONFIG = {\n  WEBAPP_URL: '${clean}',\n  API_TOKEN: '${apiToken.trim()}'\n};\n`;
+                          try {
+                            await navigator.clipboard.writeText(snippet);
+                            setCopiadoGasConfig(true);
+                            setTimeout(() => setCopiadoGasConfig(false), 2000);
+                          } catch {}
+                        }}
+                        className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-600 text-white rounded text-[10px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiadoGasConfig ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiadoGasConfig ? 'Copiado!' : 'Opcional: copiar Drive padrão para gasConfig.ts'}</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

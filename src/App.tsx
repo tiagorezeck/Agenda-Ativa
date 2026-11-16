@@ -13,7 +13,7 @@ import { PublicBookingView } from './components/public/PublicBookingView';
 import { SettingsView } from './components/settings/SettingsView';
 import { EngsegTwoFactorGate } from './components/security/EngsegTwoFactorGate';
 import { storage } from './services/storageService';
-import { isCloudActive } from './services/driveSyncService';
+import { applyDriveOverrideFromLocation, isCloudActive } from './services/driveSyncService';
 import { getEngsegConfig, isEngsegSessionVerified, subscribeEngseg } from './services/engsegService';
 import { EventoEntity } from './types/database';
 
@@ -74,6 +74,7 @@ export default function App() {
   const [cloudBootstrapping, setCloudBootstrapping] = useState<boolean>(() => storage.getCloudState().bootstrapping);
 
   const syncRouteFromLocation = () => {
+    applyDriveOverrideFromLocation(window.location.search);
     const rawPath = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
     if (rawPath === '/obrigado' || rawPath.endsWith('/obrigado')) {
       const cleanSlug = rawPath
@@ -193,7 +194,7 @@ export default function App() {
         onSelectSlug={(newSlug) => {
           setPublicSlug(newSlug);
           if (newSlug && window.location.pathname !== `/agendar/${newSlug}`) {
-            window.history.pushState({}, '', `/agendar/${newSlug}`);
+            window.history.pushState({}, '', `/agendar/${encodeURIComponent(newSlug)}${window.location.search}`);
           }
         }}
       />

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import QRCode from 'qrcode';
 import { EventoEntity } from '../../types/database';
+import { buildPublicEventPath, subscribeDriveConfig, getDriveConfig } from '../../services/driveSyncService';
 import { X, Copy, Check, Download, Share2, ExternalLink, QrCode as QrIcon } from 'lucide-react';
 
 interface QRCodeModalProps {
@@ -16,9 +17,15 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [activeWebappUrl, setActiveWebappUrl] = useState<string>(() => getDriveConfig().webappUrl);
+
+  useEffect(() => {
+    return subscribeDriveConfig((cfg) => setActiveWebappUrl(cfg.webappUrl));
+  }, []);
 
   const currentOrigin = window.location.origin;
-  const publicUrl = `${currentOrigin}/agendar/${evento.slug}`;
+  const publicPath = buildPublicEventPath(evento.slug, activeWebappUrl);
+  const publicUrl = `${currentOrigin}${publicPath}`;
   const mensagemWhatsApp = `Olá! Gostaria de convidar você para o evento *${evento.nome}*.\n\nEscolha o melhor dia e horário disponível através do link abaixo:\n${publicUrl}`;
 
   useEffect(() => {
@@ -83,9 +90,14 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
             <h4 className="text-base font-bold text-neutral-900 dark:text-white tracking-tight">
               {evento.nome}
             </h4>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">
-              /agendar/{evento.slug}
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 font-mono truncate px-4">
+              {publicPath}
             </p>
+            {activeWebappUrl && (
+              <span className="inline-block text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/70">
+                Vinculado automaticamente ao Google Drive conectado
+              </span>
+            )}
           </div>
 
           {/* QR Code Container */}
@@ -158,7 +170,7 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
             </a>
 
             <a
-              href={`/agendar/${evento.slug}`}
+              href={publicPath}
               target="_blank"
               rel="noopener noreferrer"
               onClick={onClose}

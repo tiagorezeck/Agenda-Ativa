@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { EventoEntity } from '../../types/database';
 import { storage } from '../../services/storageService';
+import { buildPublicEventPath } from '../../services/driveSyncService';
 import { formatarDataBR, formatarMoedaBRL } from '../../utils/formatters';
 import { EventModal } from './EventModal';
 import {
@@ -272,7 +273,7 @@ export const EventListView: React.FC<EventListViewProps> = ({
 
                   {/* Abrir Página Pública */}
                   <a
-                    href={`/agendar/${ev.slug}`}
+                    href={buildPublicEventPath(ev.slug)}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="Abrir página pública independente em nova aba"

@@ -91,6 +91,19 @@ export function validateGasUrlClient(rawUrl: string): { valid: boolean; normaliz
   }
 }
 
+export function extractGasDeploymentId(rawUrl: string): string {
+  const normalized = normalizeGasUrl(rawUrl);
+  if (!normalized) return '';
+  const match = normalized.match(/^https:\/\/script\.google\.com\/macros\/s\/([A-Za-z0-9_-]{20,})\/exec(?:[/?#].*)?$/i);
+  return match ? match[1] : '';
+}
+
+export function buildGasUrlFromId(deploymentId: string): string {
+  const clean = (deploymentId || '').trim();
+  if (!/^[A-Za-z0-9_-]{20,}$/.test(clean)) return '';
+  return `https://script.google.com/macros/s/${clean}/exec`;
+}
+
 // Limpa chaves antigas do localStorage para garantir 100% de dependência apenas do servidor/Sheets
 if (typeof window !== 'undefined') {
   try {
@@ -127,6 +140,73 @@ let runtimeConfigCache: RuntimeConfig = {
   loaded: false
 };
 
+let hasUrlDriveOverride = false;
+
+export function applyDriveOverrideFromLocation(search?: string): string | null {
+  if (typeof window === 'undefined' && search === undefined) return null;
+  try {
+    const rawSearch = search !== undefined ? search : window.location.search;
+    const params = new URLSearchParams(rawSearch || '');
+    const dParam = (params.get('d') || '').trim();
+    const gasParam = (params.get('gas') || '').trim();
+
+    let resolvedUrl = '';
+    if (dParam) {
+      resolvedUrl = buildGasUrlFromId(dParam);
+    }
+    if (!resolvedUrl && gasParam) {
+      const asId = buildGasUrlFromId(gasParam);
+      if (asId) {
+        resolvedUrl = asId;
+      } else {
+        const check = validateGasUrlClient(gasParam);
+        if (check.valid) {
+          resolvedUrl = check.normalizedUrl || gasParam;
+        }
+      }
+    }
+
+    if (!resolvedUrl) return null;
+
+    hasUrlDriveOverride = true;
+    inMemoryDriveConfig = {
+      ...inMemoryDriveConfig,
+      webappUrl: resolvedUrl,
+      syncStatus: 'synced'
+    };
+    runtimeConfigCache = {
+      ...runtimeConfigCache,
+      cloudConfigured: true
+    };
+    listeners.forEach((fn) => fn(getDriveConfig()));
+    runtimeListeners.forEach((fn) => fn(runtimeConfigCache));
+    return resolvedUrl;
+  } catch {
+    return null;
+  }
+}
+
+// Aplica imediatamente na inicialização caso o link público tenha ?d= ou ?gas=
+applyDriveOverrideFromLocation();
+
+export function buildPublicEventPath(slug?: string, explicitWebappUrl?: string): string {
+  const basePath = slug ? `/agendar/${encodeURIComponent(slug)}` : '/agendar';
+  const activeUrl = (explicitWebappUrl || inMemoryDriveConfig.webappUrl || initialGlobalUrl || '').trim();
+  if (!activeUrl) return basePath;
+
+  const deploymentId = extractGasDeploymentId(activeUrl);
+  if (deploymentId) {
+    return `${basePath}?d=${encodeURIComponent(deploymentId)}`;
+  }
+
+  const check = validateGasUrlClient(activeUrl);
+  if (check.valid) {
+    return `${basePath}?gas=${encodeURIComponent(check.normalizedUrl || activeUrl)}`;
+  }
+
+  return basePath;
+}
+
 export function getRuntimeConfig(): RuntimeConfig {
   return runtimeConfigCache;
 }
@@ -156,7 +236,7 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
         const effectiveToken = serverApiToken || initialGlobalToken;
 
         runtimeConfigCache = {
-          cloudConfigured: Boolean(json.cloudConfigured && validUrl) || Boolean(validUrl),
+          cloudConfigured: hasUrlDriveOverride || Boolean(json.cloudConfigured && validUrl) || Boolean(validUrl),
           engsegRequired:
             Boolean(json.engsegRequired) ||
             String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
@@ -164,7 +244,7 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
           loaded: true
         };
 
-        if (validUrl && !inMemoryDriveConfig.webappUrl) {
+        if (!hasUrlDriveOverride && validUrl && !inMemoryDriveConfig.webappUrl) {
           inMemoryDriveConfig = {
             ...inMemoryDriveConfig,
             webappUrl: validUrl,
@@ -188,7 +268,8 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
 
 export function isCloudActive(): boolean {
   return Boolean(
-    inMemoryDriveConfig.webappUrl.trim() ||
+    hasUrlDriveOverride ||
+      inMemoryDriveConfig.webappUrl.trim() ||
       initialGlobalUrl ||
       runtimeConfigCache.cloudConfigured
   );

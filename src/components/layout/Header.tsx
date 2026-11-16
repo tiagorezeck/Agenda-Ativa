@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ActiveTab } from './Sidebar';
 import { Plus, RotateCcw, Clock, ExternalLink, Sun, Moon, PanelLeftClose, PanelLeft, Maximize, Minimize } from 'lucide-react';
 import { storage } from '../../services/storageService';
+import { buildPublicEventPath } from '../../services/driveSyncService';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -157,7 +158,7 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <a
-          href={db.eventos[0]?.slug ? `/agendar/${db.eventos[0].slug}` : '/agendar'}
+          href={buildPublicEventPath(db.eventos[0]?.slug)}
           target="_blank"
           rel="noopener noreferrer"
           title="Abrir página pública independente em nova aba"

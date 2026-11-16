@@ -342,7 +342,11 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       setThankYouExited(false);
       setThankYouSecondsLeft(5);
       setResultadoSucesso(result);
-      window.history.replaceState({}, '', `/agendar/${eventoAtual.slug}/obrigado`);
+      window.history.replaceState(
+        {},
+        '',
+        `/agendar/${encodeURIComponent(eventoAtual.slug)}/obrigado${window.location.search}`
+      );
     } catch (err: any) {
       setErroMsg(err.message || 'Erro ao realizar agendamento.');
     } finally {

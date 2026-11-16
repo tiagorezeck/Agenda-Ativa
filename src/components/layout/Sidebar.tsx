@@ -16,7 +16,7 @@ import {
   PinOff
 } from 'lucide-react';
 import { storage } from '../../services/storageService';
-import { isCloudActive } from '../../services/driveSyncService';
+import { buildPublicEventPath, isCloudActive } from '../../services/driveSyncService';
 
 export type ActiveTab =
   | 'dashboard'
@@ -171,7 +171,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Footer / Página Pública / Status */}
       <div className="p-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
         <a
-          href={db.eventos[0]?.slug ? `/agendar/${db.eventos[0].slug}` : '/agendar'}
+          href={buildPublicEventPath(db.eventos[0]?.slug)}
           target="_blank"
           rel="noopener noreferrer"
           title="Abrir página pública independente em nova aba"

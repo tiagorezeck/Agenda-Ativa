@@ -16,7 +16,7 @@ import {
   sendEngseg2FACode,
   verifyEngseg2FACode
 } from '../../services/engsegService';
-import { isCloudActive } from '../../services/driveSyncService';
+import { buildPublicEventPath, isCloudActive } from '../../services/driveSyncService';
 
 interface EngsegTwoFactorGateProps {
   onVerified: () => void;
@@ -235,7 +235,7 @@ export const EngsegTwoFactorGate: React.FC<EngsegTwoFactorGateProps> = ({
         <div className="pt-3 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between text-[11px] text-neutral-500 dark:text-neutral-400">
           <span>Clientes podem agendar livremente</span>
           <a
-            href="/agendar"
+            href={buildPublicEventPath()}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-orange-600 dark:text-orange-400 hover:underline font-semibold cursor-pointer"
