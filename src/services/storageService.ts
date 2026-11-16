@@ -430,6 +430,20 @@ class StorageService {
         // ignore
       }
     }
+    const isPublicRoute =
+      typeof window !== 'undefined' &&
+      (window.location.pathname === '/agendar' ||
+        window.location.pathname.startsWith('/agendar/') ||
+        window.location.pathname === '/obrigado' ||
+        window.location.pathname.endsWith('/obrigado'));
+
+    if (isCloudActive() || isPublicRoute) {
+      this.cloudState = {
+        ...this.cloudState,
+        bootstrapping: true
+      };
+    }
+
     this.db = isCloudActive()
       ? createEmptyCloudDatabase()
       : JSON.parse(JSON.stringify(INITIAL_DATABASE));
