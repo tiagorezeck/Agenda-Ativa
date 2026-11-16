@@ -1,7 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import { storage } from '../../services/storageService';
 import { LeadEntity, StatusClienteLead } from '../../types/database';
-import { formatarDataBR, formatarDataHoraBR, formatarTelefoneBR, formatarMoedaBRL } from '../../utils/formatters';
+import {
+  formatarDataBR,
+  formatarDataHoraBR,
+  formatarTelefoneBR,
+  formatarMoedaBRL,
+  aplicarMascaraTelefoneBR,
+  isTelefoneBRValido,
+  sanitizarEmailInput,
+  isEmailValido
+} from '../../utils/formatters';
 import {
   Users,
   Search,
@@ -58,6 +67,7 @@ export const LeadsView: React.FC = () => {
   const [editLocal, setEditLocal] = useState('');
   const [editStatusCliente, setEditStatusCliente] = useState<StatusClienteLead>('LEAD');
   const [editObservacoes, setEditObservacoes] = useState('');
+  const [editErro, setEditErro] = useState<string | null>(null);
 
   const getResumoFinanceiroLead = (lead: LeadEntity) => {
     const crmDoLead = db.crm.filter(c => c.id_lead === lead.id_lead);
@@ -170,13 +180,14 @@ export const LeadsView: React.FC = () => {
     const resumo = getResumoFinanceiroLead(lead);
     setLeadSelecionado(lead);
     setEditNome(lead.nome);
-    setEditWhatsapp(lead.whatsapp);
+    setEditWhatsapp(aplicarMascaraTelefoneBR(lead.whatsapp));
     setEditEmail(lead.email);
     setEditEmpresa(lead.empresa || '');
     setEditCargo(lead.cargo || '');
     setEditLocal(lead.local || '');
     setEditStatusCliente(resumo.statusComercial);
     setEditObservacoes(lead.observacoes || '');
+    setEditErro(null);
   };
 
   const handleToggleClientStatus = (lead: LeadEntity, novoStatus: StatusClienteLead) => {
@@ -190,6 +201,17 @@ export const LeadsView: React.FC = () => {
   const handleSalvarEdicao = (e: React.FormEvent) => {
     e.preventDefault();
     if (!leadSelecionado) return;
+    setEditErro(null);
+
+    if (!isTelefoneBRValido(editWhatsapp)) {
+      setEditErro('Informe um WhatsApp válido no padrão (XX) XXXXX-XXXX.');
+      return;
+    }
+
+    if (editEmail.trim() && !isEmailValido(editEmail)) {
+      setEditErro('Informe um e-mail válido contendo @ (ex: seuemail@exemplo.com).');
+      return;
+    }
 
     const leadAtualizado: LeadEntity = {
       ...leadSelecionado,
@@ -947,10 +969,15 @@ export const LeadsView: React.FC = () => {
                 <div>
                   <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">WhatsApp *</label>
                   <input
-                    type="text"
+                    type="tel"
+                    inputMode="tel"
                     required
+                    maxLength={15}
+                    pattern="\(\d{2}\)\s?\d{4,5}-\d{4}"
+                    title="Informe o WhatsApp no padrão (XX) XXXXX-XXXX"
+                    placeholder="(11) 99999-9999"
                     value={editWhatsapp}
-                    onChange={(e) => setEditWhatsapp(e.target.value)}
+                    onChange={(e) => setEditWhatsapp(aplicarMascaraTelefoneBR(e.target.value))}
                     className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white font-mono"
                   />
                 </div>
@@ -958,8 +985,12 @@ export const LeadsView: React.FC = () => {
                   <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">E-mail</label>
                   <input
                     type="email"
+                    inputMode="email"
+                    pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                    title="Informe um e-mail válido contendo @"
+                    placeholder="seuemail@exemplo.com"
                     value={editEmail}
-                    onChange={(e) => setEditEmail(e.target.value)}
+                    onChange={(e) => setEditEmail(sanitizarEmailInput(e.target.value))}
                     className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white"
                   />
                 </div>
@@ -1021,6 +1052,12 @@ export const LeadsView: React.FC = () => {
                   className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white"
                 />
               </div>
+
+              {editErro && (
+                <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">
+                  {editErro}
+                </p>
+              )}
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-800">
                 <button

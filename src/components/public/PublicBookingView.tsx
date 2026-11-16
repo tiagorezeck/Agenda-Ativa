@@ -6,6 +6,10 @@ import {
   formatarDataBR,
   formatarMoedaBRL,
   formatarTelefoneBR,
+  aplicarMascaraTelefoneBR,
+  isTelefoneBRValido,
+  sanitizarEmailInput,
+  isEmailValido,
   gerarLinkWhatsApp,
   obterDiaSemanaAbrev,
   DIAS_SEMANA_MAP
@@ -133,11 +137,11 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   const [respostasCustom, setRespostasCustom] = useState<Record<string, string>>({});
   const [lgpdAceito, setLgpdAceito] = useState(true);
 
-  // Estado de Submissão, Agradecimento (5s) e Encerramento
+  // Estado de Submissão, Agradecimento (10s) e Encerramento
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [erroMsg, setErroMsg] = useState<string | null>(null);
   const [resultadoSucesso, setResultadoSucesso] = useState<BookingSuccessResult | null>(null);
-  const [thankYouSecondsLeft, setThankYouSecondsLeft] = useState<number>(5);
+  const [thankYouSecondsLeft, setThankYouSecondsLeft] = useState<number>(10);
   const [thankYouExited, setThankYouExited] = useState<boolean>(initialThankYouClosed);
 
   useEffect(() => {
@@ -319,6 +323,16 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       return;
     }
 
+    if (!isTelefoneBRValido(whatsapp)) {
+      setErroMsg('Informe um WhatsApp válido com DDD no padrão (XX) XXXXX-XXXX.');
+      return;
+    }
+
+    if (email.trim() && !isEmailValido(email)) {
+      setErroMsg('Informe um e-mail válido contendo @ (ex: seuemail@exemplo.com).');
+      return;
+    }
+
     const temOpcoesLocal = Boolean(
       Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0
     );
@@ -329,6 +343,22 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     if (!valorLocalFinal) {
       setErroMsg(`Por favor, informe: ${localLabelDisplay}.`);
       return;
+    }
+
+    for (const campo of camposDoEvento) {
+      const val = (respostasCustom[campo.id_campo] || '').trim();
+      if (campo.obrigatorio && !val) {
+        setErroMsg(`Por favor, preencha: ${campo.label}.`);
+        return;
+      }
+      if (val && campo.tipo === 'TELEFONE' && !isTelefoneBRValido(val)) {
+        setErroMsg(`Informe um telefone válido no padrão (XX) XXXXX-XXXX para "${campo.label}".`);
+        return;
+      }
+      if (val && campo.tipo === 'EMAIL' && !isEmailValido(val)) {
+        setErroMsg(`Informe um e-mail válido contendo @ para "${campo.label}".`);
+        return;
+      }
     }
 
     setErroMsg(null);
@@ -342,14 +372,14 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
         hora_fim: slotSelecionado.horaFim,
         nome: nome.trim(),
         whatsapp: whatsapp.trim(),
-        email: email.trim(),
+        email: email.trim().toLowerCase(),
         local: valorLocalFinal,
         respostas_customizadas: respostasCustom
       };
 
       const result = await storage.createBookingWithCloud(payload);
       setThankYouExited(false);
-      setThankYouSecondsLeft(5);
+      setThankYouSecondsLeft(10);
       setResultadoSucesso(result);
       window.history.replaceState(
         {},
@@ -496,10 +526,10 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     );
   }
 
-  // --- PÁGINA DE AGRADECIMENTO COM SAÍDA AUTOMÁTICA EM 5 SEGUNDOS ---
+  // --- PÁGINA DE AGRADECIMENTO COM SAÍDA AUTOMÁTICA EM 10 SEGUNDOS ---
   if (resultadoSucesso) {
     const primeiroNome = nome.trim().split(/\s+/)[0] || 'Cliente';
-    const progressPercent = Math.max(0, Math.min(100, (thankYouSecondsLeft / 5) * 100));
+    const progressPercent = Math.max(0, Math.min(100, (thankYouSecondsLeft / 10) * 100));
     const linkWhatsAppConfirmacao = gerarLinkWhatsApp(
       db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '5511999998888',
       `Olá! Meu nome é *${nome}* e acabei de confirmar meu agendamento para o evento *${resultadoSucesso.evento_nome}* no dia *${formatarDataBR(resultadoSucesso.data)}* às *${resultadoSucesso.hora_inicio}*.\n\nMeu Protocolo é: *${resultadoSucesso.protocolo}*.`
@@ -1176,9 +1206,13 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                               </label>
                               <input
                                 type="tel"
+                                inputMode="tel"
                                 required
+                                maxLength={15}
+                                pattern="\(\d{2}\)\s?\d{4,5}-\d{4}"
+                                title="Informe o WhatsApp no padrão (XX) XXXXX-XXXX"
                                 value={whatsapp}
-                                onChange={(e) => setWhatsapp(e.target.value)}
+                                onChange={(e) => setWhatsapp(aplicarMascaraTelefoneBR(e.target.value))}
                                 placeholder="(11) 99999-9999"
                                 className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white font-mono focus:outline-none focus:border-orange-500"
                               />
@@ -1190,8 +1224,11 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                               </label>
                               <input
                                 type="email"
+                                inputMode="email"
+                                pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                                title="Informe um e-mail válido contendo @ (ex: seuemail@exemplo.com)"
                                 value={email}
-                                onChange={(e) => setEmail(e.target.value)}
+                                onChange={(e) => setEmail(sanitizarEmailInput(e.target.value))}
                                 placeholder="seuemail@exemplo.com"
                                 className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
                               />
@@ -1285,6 +1322,60 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                                         value={respostasCustom[campo.id_campo] || ''}
                                         onChange={(e) => handleCustomChange(campo.id_campo, e.target.value)}
                                         className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                      />
+                                    )}
+
+                                    {campo.tipo === 'TELEFONE' && (
+                                      <input
+                                        type="tel"
+                                        inputMode="tel"
+                                        required={campo.obrigatorio}
+                                        maxLength={15}
+                                        pattern="\(\d{2}\)\s?\d{4,5}-\d{4}"
+                                        title="Informe o telefone no padrão (XX) XXXXX-XXXX"
+                                        placeholder={campo.placeholder || '(11) 99999-9999'}
+                                        value={respostasCustom[campo.id_campo] || ''}
+                                        onChange={(e) =>
+                                          handleCustomChange(campo.id_campo, aplicarMascaraTelefoneBR(e.target.value))
+                                        }
+                                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white font-mono focus:outline-none focus:border-orange-500"
+                                      />
+                                    )}
+
+                                    {campo.tipo === 'EMAIL' && (
+                                      <input
+                                        type="email"
+                                        inputMode="email"
+                                        required={campo.obrigatorio}
+                                        pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                                        title="Informe um e-mail válido contendo @"
+                                        placeholder={campo.placeholder || 'seuemail@exemplo.com'}
+                                        value={respostasCustom[campo.id_campo] || ''}
+                                        onChange={(e) =>
+                                          handleCustomChange(campo.id_campo, sanitizarEmailInput(e.target.value))
+                                        }
+                                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                      />
+                                    )}
+
+                                    {campo.tipo === 'NUMERO' && (
+                                      <input
+                                        type="number"
+                                        required={campo.obrigatorio}
+                                        placeholder={campo.placeholder}
+                                        value={respostasCustom[campo.id_campo] || ''}
+                                        onChange={(e) => handleCustomChange(campo.id_campo, e.target.value)}
+                                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white font-mono focus:outline-none focus:border-orange-500"
+                                      />
+                                    )}
+
+                                    {campo.tipo === 'DATA' && (
+                                      <input
+                                        type="date"
+                                        required={campo.obrigatorio}
+                                        value={respostasCustom[campo.id_campo] || ''}
+                                        onChange={(e) => handleCustomChange(campo.id_campo, e.target.value)}
+                                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white font-mono focus:outline-none focus:border-orange-500"
                                       />
                                     )}
 
@@ -1441,8 +1532,15 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                   type="text"
                   required
                   value={ssContato}
-                  onChange={(e) => setSsContato(e.target.value)}
-                  placeholder="Ex: 11999998888 ou seu@email.com"
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val && !/[a-zA-Z@]/.test(val)) {
+                      setSsContato(aplicarMascaraTelefoneBR(val));
+                    } else {
+                      setSsContato(sanitizarEmailInput(val));
+                    }
+                  }}
+                  placeholder="Ex: (11) 99999-8888 ou seu@email.com"
                   className="w-full px-3 py-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
                 />
               </div>

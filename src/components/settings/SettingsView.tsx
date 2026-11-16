@@ -27,6 +27,13 @@ import {
 } from '../../services/driveSyncService';
 import { compressImageFileToDataUrl } from '../../utils/imageCompressor';
 import {
+  aplicarMascaraTelefoneBR,
+  isTelefoneBRValido,
+  normalizarWhatsApp,
+  sanitizarEmailInput,
+  isEmailValido
+} from '../../utils/formatters';
+import {
   getEngsegConfig,
   saveEngsegConfig,
   toggleEngseg2FA,
@@ -36,7 +43,6 @@ import {
   EngsegConfig
 } from '../../services/engsegService';
 import codeGsRaw from '../../gas/Code.gs?raw';
-import setupSheetGsRaw from '../../gas/SetupSheet.gs?raw';
 import {
   Database,
   Building,
@@ -61,7 +67,8 @@ import {
   AlertCircle,
   BookmarkCheck,
   Plus,
-  Trash2
+  Trash2,
+  ExternalLink
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -77,8 +84,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   const [empresaLogo, setEmpresaLogo] = useState(
     db.config.find(c => c.chave === 'EMPRESA_LOGO')?.valor || ''
   );
-  const [whatsappContato, setWhatsappContato] = useState(
-    db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '5511999998888'
+  const [whatsappContato, setWhatsappContato] = useState(() =>
+    aplicarMascaraTelefoneBR(db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '5511999998888')
   );
   const [empresaEmail, setEmpresaEmail] = useState(
     db.config.find(c => c.chave === 'EMPRESA_EMAIL')?.valor || 'contato@institutocomet.com.br'
@@ -114,9 +121,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
 
   const [driveFiles, setDriveFiles] = useState<DriveFileEntry[]>([]);
   const [copiadoCodeGs, setCopiadoCodeGs] = useState(false);
-  const [copiadoSetupGs, setCopiadoSetupGs] = useState(false);
   const [copiadoGasConfig, setCopiadoGasConfig] = useState(false);
   const [salvoMsg, setSalvoMsg] = useState(false);
+  const [empresaErroMsg, setEmpresaErroMsg] = useState<string | null>(null);
+  const [engsegErroMsg, setEngsegErroMsg] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
 
   // Módulo ENGSEG 2FA
@@ -141,7 +149,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       const latestDb = storage.getDatabase();
       setEmpresaNome(latestDb.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || '');
       setEmpresaLogo(latestDb.config.find(c => c.chave === 'EMPRESA_LOGO')?.valor || '');
-      setWhatsappContato(latestDb.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '');
+      setWhatsappContato(
+        aplicarMascaraTelefoneBR(latestDb.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '')
+      );
       setEmpresaEmail(latestDb.config.find(c => c.chave === 'EMPRESA_EMAIL')?.valor || '');
       setEmpresaEndereco(latestDb.config.find(c => c.chave === 'EMPRESA_ENDERECO')?.valor || '');
       setEmpresaCnpj(latestDb.config.find(c => c.chave === 'EMPRESA_CNPJ')?.valor || '');
@@ -158,6 +168,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
 
   const handleSalvarEmpresa = async (e: React.FormEvent) => {
     e.preventDefault();
+    setEmpresaErroMsg(null);
+
+    if (whatsappContato.trim() && !isTelefoneBRValido(whatsappContato)) {
+      setEmpresaErroMsg('Informe um WhatsApp válido no padrão (XX) XXXXX-XXXX.');
+      return;
+    }
+
+    if (empresaEmail.trim() && !isEmailValido(empresaEmail)) {
+      setEmpresaErroMsg('Informe um e-mail oficial válido contendo @ (ex: contato@empresa.com.br).');
+      return;
+    }
+
     if (gasUrl.trim()) {
       const check = validateGasUrlClient(gasUrl);
       if (!check.valid) {
@@ -169,8 +191,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
 
     storage.updateConfig('EMPRESA_NOME', empresaNome.trim());
     storage.updateConfig('EMPRESA_LOGO', empresaLogo.trim());
-    storage.updateConfig('WHATSAPP_CONTATO', whatsappContato.trim());
-    storage.updateConfig('EMPRESA_EMAIL', empresaEmail.trim());
+    storage.updateConfig(
+      'WHATSAPP_CONTATO',
+      whatsappContato.trim() ? normalizarWhatsApp(whatsappContato) : ''
+    );
+    storage.updateConfig('EMPRESA_EMAIL', empresaEmail.trim().toLowerCase());
     storage.updateConfig('EMPRESA_ENDERECO', empresaEndereco.trim());
     storage.updateConfig('EMPRESA_CNPJ', empresaCnpj.trim());
     storage.updateConfig('TERMOS_LGPD', termosLgpd.trim());
@@ -528,21 +553,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     }
   };
 
-  const handleCopiarScript = async (tipo: 'code' | 'setup') => {
-    const content = tipo === 'code' ? codeGsRaw : setupSheetGsRaw;
+  const handleCopiarScript = async () => {
     try {
-      await navigator.clipboard.writeText(content);
-      if (tipo === 'code') {
-        setCopiadoCodeGs(true);
-        setTimeout(() => setCopiadoCodeGs(false), 2000);
-      } else {
-        setCopiadoSetupGs(true);
-        setTimeout(() => setCopiadoSetupGs(false), 2000);
-      }
+      await navigator.clipboard.writeText(codeGsRaw);
+      setCopiadoCodeGs(true);
+      setTimeout(() => setCopiadoCodeGs(false), 2000);
     } catch {
       setResultadoTeste({
         success: false,
-        message: `Não foi possível acessar a área de transferência automaticamente para ${tipo === 'code' ? 'Code.gs' : 'SetupSheet.gs'}.`
+        message: 'Não foi possível acessar a área de transferência automaticamente para copiar o Code.gs.'
       });
     }
   };
@@ -558,8 +577,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   };
 
   const handleToggleEngsegSingleButton = () => {
+    setEngsegErroMsg(null);
+    const cleanEmail = engsegCfg.email.trim();
+    if (!engsegCfg.enabled && !isEmailValido(cleanEmail)) {
+      setEngsegErroMsg('Informe um e-mail autorizado válido contendo @ antes de ativar o 2FA.');
+      return;
+    }
     // Garante que o e-mail digitado esteja salvo antes de ativar o bloqueio 2FA
-    saveEngsegConfig({ email: engsegCfg.email.trim() });
+    saveEngsegConfig({ email: cleanEmail.toLowerCase() });
     toggleEngseg2FA(true);
   };
 
@@ -707,10 +732,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                     WhatsApp de Suporte / Confirmação
                   </label>
                   <input
-                    type="text"
+                    type="tel"
+                    inputMode="tel"
+                    maxLength={15}
+                    pattern="\(\d{2}\)\s?\d{4,5}-\d{4}"
+                    title="Informe o WhatsApp no padrão (XX) XXXXX-XXXX"
                     value={whatsappContato}
-                    onChange={(e) => setWhatsappContato(e.target.value)}
-                    placeholder="5511999998888"
+                    onChange={(e) => setWhatsappContato(aplicarMascaraTelefoneBR(e.target.value))}
+                    placeholder="(11) 99999-9999"
                     className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white font-mono text-xs focus:outline-none focus:border-orange-500"
                   />
                 </div>
@@ -721,8 +750,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                   </label>
                   <input
                     type="email"
+                    inputMode="email"
+                    pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                    title="Informe um e-mail válido contendo @"
                     value={empresaEmail}
-                    onChange={(e) => setEmpresaEmail(e.target.value)}
+                    onChange={(e) => setEmpresaEmail(sanitizarEmailInput(e.target.value))}
                     placeholder="contato@empresa.com.br"
                     className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white text-xs focus:outline-none focus:border-orange-500"
                   />
@@ -779,6 +811,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                 />
               </div>
 
+              {empresaErroMsg && (
+                <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">
+                  {empresaErroMsg}
+                </p>
+              )}
+
               <div className="pt-2 flex items-center gap-3">
                 <button
                   type="submit"
@@ -827,11 +865,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                 </label>
                 <input
                   type="email"
+                  inputMode="email"
+                  pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                  title="Informe um e-mail válido contendo @"
                   value={engsegCfg.email}
-                  onChange={(e) => saveEngsegConfig({ email: e.target.value })}
+                  onChange={(e) => {
+                    setEngsegErroMsg(null);
+                    saveEngsegConfig({ email: sanitizarEmailInput(e.target.value) });
+                  }}
                   placeholder="admin@empresa.com.br"
                   className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white text-xs focus:outline-none focus:border-orange-500"
                 />
+                {engsegErroMsg && (
+                  <p className="text-[11px] text-rose-600 dark:text-rose-400 font-medium mt-1">
+                    {engsegErroMsg}
+                  </p>
+                )}
               </div>
 
               {/* Botão Único de Ativação / Desativação para Testes */}
@@ -1266,58 +1315,61 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                 )}
               </div>
 
-              {/* Código Fonte Pronto para Deploy */}
-              <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
-                <p className="font-semibold text-neutral-800 dark:text-neutral-300">
-                  Scripts do Motor v2.0 para Google Apps Script:
-                </p>
+              {/* Código Fonte Único Pronto para Deploy */}
+              <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold text-neutral-800 dark:text-neutral-300">
+                    Script Único do Motor v2.1 para Google Apps Script:
+                  </p>
+                  <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded-md">
+                    Code.gs + SetupSheet unificados
+                  </span>
+                </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => handleCopiarScript('code')}
-                    className="px-3 py-2 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-950 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-lg font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    onClick={handleCopiarScript}
+                    className="px-3 py-2 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-950 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                   >
                     {copiadoCodeGs ? (
                       <>
                         <Check className="w-3.5 h-3.5 text-emerald-500" />
-                        <span>Copiado!</span>
+                        <span>Código Completo Copiado!</span>
                       </>
                     ) : (
                       <>
                         <Copy className="w-3.5 h-3.5 text-orange-500" />
-                        <span>Copiar Code.gs</span>
+                        <span>Copiar Código Completo (Code.gs)</span>
                       </>
                     )}
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleCopiarScript('setup')}
-                    className="px-3 py-2 bg-neutral-50 hover:bg-neutral-100 dark:bg-neutral-950 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-lg font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  <a
+                    href="https://script.google.com/home"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-2 bg-orange-50 hover:bg-orange-100 dark:bg-orange-950/40 dark:hover:bg-orange-950/70 border border-orange-300 dark:border-orange-800 text-orange-700 dark:text-orange-300 rounded-lg font-semibold flex items-center justify-center gap-1.5 transition-colors"
                   >
-                    {copiadoSetupGs ? (
-                      <>
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                        <span>Copiado!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5 text-orange-500" />
-                        <span>Copiar SetupSheet.gs</span>
-                      </>
-                    )}
-                  </button>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Abrir Apps Script</span>
+                  </a>
                 </div>
 
                 <div className="p-3 bg-neutral-50 dark:bg-neutral-950/60 border border-neutral-200 dark:border-neutral-800 rounded-lg text-[11px] text-neutral-600 dark:text-neutral-400 space-y-1">
-                  <p className="font-semibold text-neutral-800 dark:text-neutral-300">Instruções de Deploy (Agenda Ativa):</p>
+                  <p className="font-semibold text-neutral-800 dark:text-neutral-300">Instruções de Deploy (Código Único — Agenda Ativa):</p>
                   <ol className="list-decimal list-inside space-y-0.5">
-                    <li>Abra <code>script.new</code> ou sua planilha em <strong>Extensões &gt; Apps Script</strong>.</li>
-                    <li>Cole <code>Code.gs</code> e <code>SetupSheet.gs</code> (a pasta raiz <code>Agenda Ativa</code> será criada no Drive).</li>
-                    <li>Execute <code>inicializarPlanilha()</code> se quiser pré-formatar todas as 13 abas.</li>
-                    <li>Clique em <strong>Implantar &gt; Nova Implantação &gt; App da Web</strong> (Executar como: <em>Eu</em> · Acesso: <em>Qualquer pessoa</em>).</li>
-                    <li>Cole a URL gerada acima e clique em <strong>Testar (Ping)</strong>.</li>
+                    <li>
+                      Clique em <strong>Abrir Apps Script</strong> acima (ou{' '}
+                      <a href="https://script.new" target="_blank" rel="noreferrer" className="text-orange-600 dark:text-orange-400 underline font-semibold">
+                        criar novo em script.new
+                      </a>
+                      ).
+                    </li>
+                    <li>Cole todo o código copiado dentro de <code>Code.gs</code> e salve (<strong>Ctrl + S</strong>) — o instalador das 13 abas já está incluso nele.</li>
+                    <li><em>(Opcional)</em> Execute <code>inicializarPlanilha</code> ou <code>testConnection</code> no editor para criar/formatar as 13 abas na hora.</li>
+                    <li>Clique em <strong>Implantar &gt; Nova Implantação &gt; App da Web</strong> (Executar como: <em>Eu</em> · Acesso: <em>Qualquer pessoa</em>). Se já existe, use <strong>Gerenciar implantações &gt; Editar &gt; Nova versão</strong>.</li>
+                    <li>Cole a URL <code>/exec</code> gerada acima e clique em <strong>Salvar URL</strong>.</li>
                   </ol>
                 </div>
               </div>

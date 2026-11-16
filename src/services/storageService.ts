@@ -24,6 +24,7 @@ import { gerarCodigoAleatorio, normalizarWhatsApp, obterDiaSemanaAbrev } from '.
 import {
   executeDriveRequest,
   fetchFromGoogleDrive,
+  fetchPublicBookingFromGoogleDrive,
   getDriveConfig,
   hydrateRuntimeConfig,
   isCloudActive,
@@ -536,21 +537,32 @@ class StorageService {
     this.cloudState = { ...this.cloudState, bootstrapping: true, lastError: null };
     this.notifyListeners();
 
-    await hydrateRuntimeConfig();
-    notifyEngsegListeners();
-
-    if (!isCloudActive()) {
-      this.cloudState = { ...this.cloudState, bootstrapping: false };
-      this.notifyListeners();
-      return false;
-    }
+    const hasImmediateUrl = Boolean(getDriveConfig().webappUrl.trim());
 
     try {
-      await this.pullFromCloud(true);
+      if (hasImmediateUrl) {
+        const runtimePromise = hydrateRuntimeConfig().then(() => {
+          notifyEngsegListeners();
+        });
+        await Promise.all([this.pullFromCloud(false), runtimePromise]);
+      } else {
+        await hydrateRuntimeConfig();
+        notifyEngsegListeners();
+
+        if (!isCloudActive()) {
+          this.cloudState = { ...this.cloudState, bootstrapping: false };
+          this.notifyListeners();
+          return false;
+        }
+
+        await this.pullFromCloud(false);
+      }
+
       this.cloudState = { ...this.cloudState, bootstrapping: false, loadedFromCloud: true, lastError: null };
       this.notifyListeners();
       return true;
     } catch (err: any) {
+      notifyEngsegListeners();
       console.warn('Bootstrap da nuvem falhou:', err);
       this.cloudState = {
         ...this.cloudState,
@@ -589,7 +601,12 @@ class StorageService {
     this.cloudState = { ...this.cloudState, syncing: true, lastError: null };
     this.notifyListeners();
     try {
-      const res = await fetchFromGoogleDrive(cfg.webappUrl || undefined, cfg.apiToken, nocache);
+      const isPublicRoute =
+        typeof window !== 'undefined' &&
+        (window.location.pathname.startsWith('/agendar') || window.location.pathname.startsWith('/obrigado'));
+      const res = isPublicRoute
+        ? await fetchPublicBookingFromGoogleDrive(cfg.webappUrl || undefined, cfg.apiToken, nocache)
+        : await fetchFromGoogleDrive(cfg.webappUrl || undefined, cfg.apiToken, nocache);
       const cloudDb =
         res && res.data && typeof res.data === 'object' && Array.isArray(res.data.eventos)
           ? res.data
@@ -725,7 +742,7 @@ class StorageService {
   }
 
   // --- Validação Atômica e Criação de Agendamento (Anti-Overbooking) ---
-  public createBooking(payload: BookingSubmissionPayload): BookingSuccessResult {
+  public createBooking(payload: BookingSubmissionPayload, skipSaveSync: boolean = false): BookingSuccessResult {
     const evento = this.db.eventos.find(
       e => e.slug === payload.slug_evento || e.id_evento === payload.slug_evento
     );
@@ -899,7 +916,7 @@ class StorageService {
     });
 
     this.log('INFO', 'BOOKING_CONFIRMED', `Agendamento ${protocolo} criado para ${payload.nome}`);
-    this.salvar(this.db);
+    this.salvar(this.db, skipSaveSync);
 
     return {
       protocolo,
@@ -936,7 +953,7 @@ class StorageService {
       this.replaceDatabase(res.database);
     } else {
       try {
-        this.createBooking(payload);
+        this.createBooking(payload, true);
       } catch {
         // já gravado na nuvem
       }

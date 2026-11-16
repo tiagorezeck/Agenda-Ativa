@@ -1,14 +1,15 @@
 // =========================================================================
-// AGENDA ATIVA — MOTOR UNIVERSAL v2.0 (DADOS DRIVE + SHEETS BATCH + ENGSEG)
+// AGENDA ATIVA — MOTOR UNIVERSAL v2.1 UNIFICADO (DRIVE + SHEETS + SETUP + ENGSEG)
 // Arquitetura Híbrida: Google Drive (JSON Mestre) + Sheets (Batch) + GAS
 // =========================================================================
 //
-// INSTRUÇÕES DE IMPLANTAÇÃO:
+// INSTRUÇÕES DE IMPLANTAÇÃO (CÓDIGO ÚNICO):
 // 1. Acesse script.new (ou Extensões > Apps Script na sua planilha).
-// 2. Cole este código em Code.gs (e opcionalmente SetupSheet.gs).
-// 3. Clique em Implantar > Nova Implantação > Tipo: App da Web.
-// 4. Executar como: "Eu" | Quem tem acesso: "Qualquer pessoa".
-// 5. Copie a URL /exec e cole em Configurações > Motor DADOS DRIVE v2.0.
+// 2. Cole TODO este código único em Code.gs (já inclui o instalador das 13 abas).
+// 3. (Opcional) Execute 'testConnection' ou 'inicializarPlanilha' para autorizar/criar abas.
+// 4. Clique em Implantar > Nova Implantação > Tipo: App da Web.
+// 5. Executar como: "Eu" | Quem tem acesso: "Qualquer pessoa".
+// 6. Copie a URL /exec e cole em Configurações > Motor DADOS DRIVE.
 // =========================================================================
 
 // Função de teste para executar no editor e autorizar todas as permissões com 1 clique:
@@ -25,6 +26,41 @@ function testConnection() {
   Logger.log("Conexão e permissões ativas! Planilha: " + ss.getName() + " (" + ss.getUrl() + ")");
   Logger.log("Resposta Ping: " + pingText);
   return "OK: Conexão autorizada com sucesso! Planilha: " + ss.getUrl();
+}
+
+// Instalador unificado (antigo SetupSheet.gs): cria e formata todas as 13 abas
+function inicializarPlanilha() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) {
+    var folders = getAgendaAtivaFolders();
+    ss = getOrCreateSpreadsheet(folders.data);
+  }
+
+  for (var sheetName in SHEETS_SCHEMA) {
+    getOrCreateSheet(ss, sheetName, SHEETS_SCHEMA[sheetName]);
+  }
+
+  var configSheet = ss.getSheetByName("CONFIG");
+  if (configSheet && configSheet.getLastRow() <= 1) {
+    var now = new Date().toISOString();
+    configSheet.appendRow(["EMPRESA_NOME", "Minha Empresa de Atendimento", "Razão Social / Nome Fantasia", now]);
+    configSheet.appendRow(["FUSO_HORARIO", "America/Sao_Paulo", "Fuso horário oficial", now]);
+    configSheet.appendRow(["WHATSAPP_CONTATO", "5511999998888", "WhatsApp de suporte", now]);
+    configSheet.appendRow(["TERMOS_LGPD", "Seus dados serão utilizados exclusivamente para contato e realização do atendimento.", "Texto de consentimento LGPD", now]);
+  }
+
+  var userSheet = ss.getSheetByName("USUARIOS");
+  if (userSheet && userSheet.getLastRow() <= 1) {
+    var nowUsr = new Date().toISOString();
+    userSheet.appendRow(["USR-001", "Administrador do Sistema", "admin@empresa.com.br", "ADMIN", true, nowUsr]);
+  }
+
+  try {
+    SpreadsheetApp.getUi().alert("Sucesso! As 13 abas do Agenda Ativa foram criadas e formatadas.");
+  } catch (eUi) {}
+
+  Logger.log("Planilha inicializada com as 13 abas: " + ss.getUrl());
+  return "OK: As 13 abas foram criadas e formatadas em " + ss.getName() + " (" + ss.getUrl() + ")";
 }
 
 var ROOT_FOLDER_NAME = "Agenda Ativa";
@@ -88,8 +124,39 @@ var SHEETS_SCHEMA = {
 };
 
 // =========================================================================
-// DO GET (CONSULTAS RÁPIDAS COM CACHE <100ms, PING, LISTAGEM, ARQUIVOS)
+// DO GET (CONSULTAS RÁPIDAS COM CACHE <100ms ANTES DE TOCAR NO DRIVE)
 // =========================================================================
+function buildPublicBookingPayload(dbObj) {
+  var db = dbObj || {};
+  var rawLeads = Array.isArray(db.leads) ? db.leads : [];
+  var slimLeads = [];
+  for (var i = 0; i < rawLeads.length; i++) {
+    var l = rawLeads[i];
+    if (!l || l.excluido === true) continue;
+    slimLeads.push({
+      id_lead: l.id_lead,
+      nome: l.nome,
+      whatsapp: l.whatsapp,
+      email: l.email || ""
+    });
+  }
+  return {
+    config: Array.isArray(db.config) ? db.config : [],
+    usuarios: [],
+    eventos: Array.isArray(db.eventos) ? db.eventos : [],
+    horarios: Array.isArray(db.horarios) ? db.horarios : [],
+    bloqueios: Array.isArray(db.bloqueios) ? db.bloqueios : [],
+    agendamentos: Array.isArray(db.agendamentos) ? db.agendamentos : [],
+    leads: slimLeads,
+    campos_formulario: Array.isArray(db.campos_formulario) ? db.campos_formulario : [],
+    respostas: [],
+    crm: [],
+    historico_crm: [],
+    tarefas: [],
+    logs: []
+  };
+}
+
 function doGet(e) {
   try {
     var params = (e && e.parameter) ? e.parameter : {};
@@ -101,8 +168,43 @@ function doGet(e) {
       return jsonResponse({ status: "unauthorized", statusCode: 401, message: auth.error }, 401);
     }
 
-    var folders = getAgendaAtivaFolders();
-    var folder = folders.data;
+    // 0B. VIA EXPRESSA DE CACHE EM MEMÓRIA (<100ms — SEM CHAMAR DRIVEAPP)
+    var isFastReadAction =
+      action === "get" ||
+      action === "GET_DATABASE" ||
+      action === "GET_PUBLIC_BOOKING" ||
+      action === "GET_EVENT_BY_SLUG";
+
+    if (isFastReadAction && !params.nocache) {
+      var cachedRoot = getFromCache(CACHE_KEY_ROOT);
+      if (cachedRoot) {
+        if (action === "GET_PUBLIC_BOOKING") {
+          return jsonResponse({ status: "success", data: buildPublicBookingPayload(JSON.parse(cachedRoot)), cached: true });
+        }
+        if (action === "GET_EVENT_BY_SLUG") {
+          var parsedFast = JSON.parse(cachedRoot);
+          var evListFast = Array.isArray(parsedFast.eventos) ? parsedFast.eventos : [];
+          var slugFast = String(params.slug || "").trim();
+          var evFoundFast = null;
+          for (var fi = 0; fi < evListFast.length; fi++) {
+            if (evListFast[fi].slug === slugFast || evListFast[fi].id_evento === slugFast) {
+              evFoundFast = evListFast[fi];
+              break;
+            }
+          }
+          if (!evFoundFast) {
+            return jsonResponse({ status: "error", statusCode: 404, message: "Evento não encontrado." }, 404);
+          }
+          return jsonResponse({ status: "success", data: evFoundFast, cached: true });
+        }
+        if (action === "GET_DATABASE") {
+          return jsonResponse({ status: "success", data: JSON.parse(cachedRoot), cached: true });
+        }
+        return ContentService.createTextOutput(cachedRoot).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    var folder = getDataFolderFast();
 
     // 1. PING / TESTE DE CONEXÃO
     if (action === "ping" || action === "test") {
@@ -111,8 +213,7 @@ function doGet(e) {
 
       var exportUrl = "https://docs.google.com/spreadsheets/d/" + ss.getId() + "/export?format=xlsx";
       var scriptSecret = PropertiesService.getScriptProperties().getProperty("API_SECRET") || "";
-      var rootFiles = folder.getFilesByName(ROOT_FILE_NAME);
-      var hasDatabase = rootFiles.hasNext();
+      var hasDatabase = Boolean(getRootJsonFileFast(folder));
 
       return jsonResponse({
         status: "success",
@@ -129,9 +230,9 @@ function doGet(e) {
         cacheEnabled: true,
         lockEnabled: true,
         engsegEnabled: true,
-        version: "2.0-Enterprise",
+        version: "2.1-Fast",
         timestamp: new Date().getTime(),
-        message: "Conexão ativa! Agenda Ativa Motor v2.0 pronto (" + ss.getName() + ")."
+        message: "Conexão ativa! Agenda Ativa Motor v2.1 pronto (" + ss.getName() + ")."
       });
     }
 
@@ -167,9 +268,9 @@ function doGet(e) {
       return jsonResponse({ status: "error", statusCode: 404, message: "Arquivo não encontrado." }, 404);
     }
 
-    // 4. BUSCAR EVENTO PÚBLICO POR SLUG
+    // 4. BUSCAR EVENTO PÚBLICO POR SLUG (FALLBACK SEM CACHE)
     if (action === "GET_EVENT_BY_SLUG") {
-      var dbCachedOrDisk = loadAuthoritativeDatabase(folder, Boolean(params.nocache));
+      var dbCachedOrDisk = loadAuthoritativeDatabaseFast(folder, Boolean(params.nocache));
       var eventos = Array.isArray(dbCachedOrDisk.eventos) ? dbCachedOrDisk.eventos : [];
       var slug = String(params.slug || "").trim();
       var eventoEncontrado = null;
@@ -185,20 +286,14 @@ function doGet(e) {
       return jsonResponse({ status: "success", data: eventoEncontrado });
     }
 
-    // 5. GET PADRÃO (get / GET_DATABASE) COM CACHE EM MEMÓRIA CHUNKED
-    if (!params.nocache) {
-      var cachedRoot = getFromCache(CACHE_KEY_ROOT);
-      if (cachedRoot) {
-        if (action === "GET_DATABASE") {
-          return jsonResponse({ status: "success", data: JSON.parse(cachedRoot), cached: true });
-        }
-        return ContentService.createTextOutput(cachedRoot).setMimeType(ContentService.MimeType.JSON);
-      }
-    }
-
-    var dbData = loadAuthoritativeDatabase(folder, true);
+    // 5. GET PADRÃO / GET_PUBLIC_BOOKING COM POPULAÇÃO DE CACHE
+    var dbData = loadAuthoritativeDatabaseFast(folder, Boolean(params.nocache));
     var serializedData = JSON.stringify(dbData);
     putToCache(CACHE_KEY_ROOT, serializedData, CACHE_TTL_SECONDS);
+
+    if (action === "GET_PUBLIC_BOOKING") {
+      return jsonResponse({ status: "success", data: buildPublicBookingPayload(dbData), cached: false });
+    }
 
     if (action === "GET_DATABASE") {
       return jsonResponse({ status: "success", data: dbData, cached: false });
@@ -250,8 +345,7 @@ function doPost(e) {
   }
 
   try {
-    var folders = getAgendaAtivaFolders();
-    var folder = folders.data;
+    var folder = getDataFolderFast();
     var spreadsheet = getOrCreateSpreadsheet(folder);
 
     // 1. CONFIGURAR API_SECRET
@@ -271,7 +365,7 @@ function doPost(e) {
       var now = new Date();
       var timestamp = formatDate(now);
       var checkpointName = "Checkpoint-" + timestamp + ".json";
-      var cpSource = payload.data || loadAuthoritativeDatabase(folder, true);
+      var cpSource = payload.data || loadAuthoritativeDatabaseFast(folder, false);
       var content = JSON.stringify(cpSource, null, 2);
       folder.createFile(checkpointName, content, MimeType.PLAIN_TEXT);
       return jsonResponse({ status: "success", fileName: checkpointName, message: "Checkpoint criado com sucesso." });
@@ -286,17 +380,18 @@ function doPost(e) {
       }
       var srcContent = srcFiles.next().getBlob().getDataAsString("UTF-8");
       var parsedContent = JSON.parse(srcContent);
+      var compactRestored = JSON.stringify(parsedContent);
 
-      upsertRootJsonFile(folder, JSON.stringify(parsedContent, null, 2));
+      upsertRootJsonFileFast(folder, compactRestored);
       syncDataToGoogleSheets(spreadsheet, parsedContent);
-      putToCache(CACHE_KEY_ROOT, JSON.stringify(parsedContent), CACHE_TTL_SECONDS);
+      putToCache(CACHE_KEY_ROOT, compactRestored, CACHE_TTL_SECONDS);
 
       return jsonResponse({ status: "success", data: parsedContent, content: parsedContent, message: "Checkpoint restaurado como banco principal." });
     }
 
-    // 4. OPERAÇÃO ATÔMICA DE AGENDAMENTO PÚBLICO (ANTI-OVERBOOKING SOB LOCK)
+    // 4. OPERAÇÃO ATÔMICA DE AGENDAMENTO PÚBLICO (ANTI-OVERBOOKING SOB LOCK + GRAVAÇÃO INCREMENTAL RÁPIDA)
     if (action === "CREATE_BOOKING") {
-      var currentDb = loadAuthoritativeDatabase(folder, true);
+      var currentDb = loadAuthoritativeDatabaseFast(folder, false);
       var bookingInput = payload.data || payload.payload || payload;
       var bookingOutcome = executeAtomicBookingOnDb(currentDb, bookingInput);
       if (!bookingOutcome.success) {
@@ -305,22 +400,21 @@ function doPost(e) {
 
       trimLogsInDb(currentDb);
       var serializedBookingDb = JSON.stringify(currentDb);
-      upsertRootJsonFile(folder, JSON.stringify(currentDb, null, 2));
-      syncDataToGoogleSheets(spreadsheet, currentDb);
+      upsertRootJsonFileFast(folder, serializedBookingDb);
       putToCache(CACHE_KEY_ROOT, serializedBookingDb, CACHE_TTL_SECONDS);
+      syncBookingDeltaToSheets(spreadsheet, bookingOutcome.touched);
       setupDailyBackupTrigger();
 
       return jsonResponse({
         status: "success",
         data: bookingOutcome.data,
-        database: currentDb,
         spreadsheetUrl: spreadsheet.getUrl()
       });
     }
 
     // 4B. CANCELAMENTO ATÔMICO PELO CLIENTE OU ADMIN (SOB LOCK)
     if (action === "CANCEL_BOOKING") {
-      var dbCancel = loadAuthoritativeDatabase(folder, true);
+      var dbCancel = loadAuthoritativeDatabaseFast(folder, false);
       var cancelInput = payload.data || payload.payload || payload;
       var cancelOutcome = executeAtomicCancelOnDb(dbCancel, cancelInput);
       if (!cancelOutcome.success) {
@@ -328,9 +422,10 @@ function doPost(e) {
       }
 
       trimLogsInDb(dbCancel);
-      upsertRootJsonFile(folder, JSON.stringify(dbCancel, null, 2));
-      syncDataToGoogleSheets(spreadsheet, dbCancel);
-      putToCache(CACHE_KEY_ROOT, JSON.stringify(dbCancel), CACHE_TTL_SECONDS);
+      var serializedCancel = JSON.stringify(dbCancel);
+      upsertRootJsonFileFast(folder, serializedCancel);
+      putToCache(CACHE_KEY_ROOT, serializedCancel, CACHE_TTL_SECONDS);
+      syncBookingStatusDeltaToSheets(spreadsheet, dbCancel);
 
       return jsonResponse({
         status: "success",
@@ -341,7 +436,7 @@ function doPost(e) {
 
     // 4C. REMARCAÇÃO ATÔMICA PELO CLIENTE (SOB LOCK)
     if (action === "RESCHEDULE_BOOKING") {
-      var dbResched = loadAuthoritativeDatabase(folder, true);
+      var dbResched = loadAuthoritativeDatabaseFast(folder, false);
       var reschedInput = payload.data || payload.payload || payload;
       var reschedOutcome = executeAtomicRescheduleOnDb(dbResched, reschedInput);
       if (!reschedOutcome.success) {
@@ -349,9 +444,10 @@ function doPost(e) {
       }
 
       trimLogsInDb(dbResched);
-      upsertRootJsonFile(folder, JSON.stringify(dbResched, null, 2));
-      syncDataToGoogleSheets(spreadsheet, dbResched);
-      putToCache(CACHE_KEY_ROOT, JSON.stringify(dbResched), CACHE_TTL_SECONDS);
+      var serializedResched = JSON.stringify(dbResched);
+      upsertRootJsonFileFast(folder, serializedResched);
+      putToCache(CACHE_KEY_ROOT, serializedResched, CACHE_TTL_SECONDS);
+      syncBookingStatusDeltaToSheets(spreadsheet, dbResched);
 
       return jsonResponse({
         status: "success",
@@ -362,14 +458,15 @@ function doPost(e) {
 
     // 5. SALVAR / SINCRONIZAR BANCO GERAL (save)
     var incomingData = payload.data || payload.payload || payload;
-    var existingData = loadAuthoritativeDatabase(folder, true);
+    var existingData = loadAuthoritativeDatabaseFast(folder, false);
     var mergedData = mergeDatabaseObjects(existingData, incomingData);
     ensureNativeUuids(mergedData);
     trimLogsInDb(mergedData);
 
-    upsertRootJsonFile(folder, JSON.stringify(mergedData, null, 2));
+    var serializedMerged = JSON.stringify(mergedData);
+    upsertRootJsonFileFast(folder, serializedMerged);
     syncDataToGoogleSheets(spreadsheet, mergedData);
-    putToCache(CACHE_KEY_ROOT, JSON.stringify(mergedData), CACHE_TTL_SECONDS);
+    putToCache(CACHE_KEY_ROOT, serializedMerged, CACHE_TTL_SECONDS);
     setupDailyBackupTrigger();
 
     return jsonResponse({
@@ -561,6 +658,8 @@ function executeAtomicBookingOnDb(db, bookingData) {
     }
   }
 
+  var isNewLead = false;
+  var leadRef = null;
   var idLead = "";
   if (leadEncontrado) {
     idLead = leadEncontrado.id_lead;
@@ -570,9 +669,11 @@ function executeAtomicBookingOnDb(db, bookingData) {
     leadEncontrado.total_agendamentos = (Number(leadEncontrado.total_agendamentos) || 0) + 1;
     leadEncontrado.data_ultimo_agendamento = nowIso;
     leadEncontrado.atualizado_em = nowIso;
+    leadRef = leadEncontrado;
   } else {
+    isNewLead = true;
     idLead = "LED-" + Utilities.getUuid().slice(0, 8).toUpperCase();
-    db.leads.unshift({
+    leadRef = {
       id_lead: idLead,
       nome: bookingData.nome,
       whatsapp: whatsappNorm,
@@ -588,7 +689,8 @@ function executeAtomicBookingOnDb(db, bookingData) {
       observacoes: "Lead captado automaticamente pelo evento " + evento.nome,
       criado_em: nowIso,
       atualizado_em: nowIso
-    });
+    };
+    db.leads.unshift(leadRef);
   }
 
   var dataFmt = String(bookingData.data || "").replace(/-/g, "");
@@ -596,7 +698,7 @@ function executeAtomicBookingOnDb(db, bookingData) {
   var protocolo = "PROT-" + dataFmt + "-" + rand4;
   var idAgendamento = "AGD-" + dataFmt + "-" + Utilities.getUuid().slice(0, 6).toUpperCase();
 
-  db.agendamentos.unshift({
+  var newAgendamento = {
     id_agendamento: idAgendamento,
     protocolo: protocolo,
     id_evento: evento.id_evento,
@@ -608,20 +710,24 @@ function executeAtomicBookingOnDb(db, bookingData) {
     motivo_cancelamento: "",
     cancelado_em: "",
     criado_em: nowIso
-  });
+  };
+  db.agendamentos.unshift(newAgendamento);
 
+  var newRespostas = [];
   if (bookingData.respostas_customizadas) {
     for (var campoId in bookingData.respostas_customizadas) {
       var val = bookingData.respostas_customizadas[campoId];
       if (val !== undefined && val !== null && val !== "") {
-        db.respostas.push({
+        var rspObj = {
           id_resposta: "RSP-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
           id_agendamento: idAgendamento,
           id_lead: idLead,
           id_campo: campoId,
           valor: String(val),
           criado_em: nowIso
-        });
+        };
+        db.respostas.push(rspObj);
+        newRespostas.push(rspObj);
       }
     }
   }
@@ -631,7 +737,7 @@ function executeAtomicBookingOnDb(db, bookingData) {
   var parcelas = Math.max(1, Number(evento.produto_parcelas) || 1);
   var valorProduto = Number(evento.produto_valor) || (valorMensal > 0 ? valorMensal * parcelas : 0);
   var nomeProduto = String(evento.produto_nome || "").trim();
-  db.crm.unshift({
+  var newCrm = {
     id_oportunidade: idOportunidade,
     id_lead: idLead,
     id_agendamento_origem: idAgendamento,
@@ -650,12 +756,13 @@ function executeAtomicBookingOnDb(db, bookingData) {
     ordem_coluna: 1,
     criado_em: nowIso,
     atualizado_em: nowIso
-  });
+  };
+  db.crm.unshift(newCrm);
 
   var parcelaInfoTxt = (valorMensal > 0 && parcelas > 1)
     ? parcelas + "x de R$ " + valorMensal.toFixed(2) + " = "
     : "";
-  db.historico_crm.unshift({
+  var newHist = {
     id_historico: "HCRM-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
     id_oportunidade: idOportunidade,
     tipo: "MUDANCA_ESTAGIO",
@@ -665,9 +772,10 @@ function executeAtomicBookingOnDb(db, bookingData) {
       (nomeProduto || valorProduto > 0 ? " · Produto: " + (nomeProduto || evento.nome) + " (" + parcelaInfoTxt + "R$ " + valorProduto.toFixed(2) + ")" : ""),
     usuario_id: "SISTEMA",
     criado_em: nowIso
-  });
+  };
+  db.historico_crm.unshift(newHist);
 
-  db.logs.unshift({
+  var newLog = {
     id_log: "LOG-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
     nivel: "INFO",
     origem: "GAS_V2",
@@ -675,7 +783,8 @@ function executeAtomicBookingOnDb(db, bookingData) {
     detalhes: "Agendamento " + protocolo + " gravado com LockService.",
     ip_ou_user_agent: "",
     timestamp: nowIso
-  });
+  };
+  db.logs.unshift(newLog);
 
   return {
     success: true,
@@ -689,6 +798,15 @@ function executeAtomicBookingOnDb(db, bookingData) {
       hora_inicio: bookingData.hora_inicio,
       hora_fim: bookingData.hora_fim || bookingData.hora_inicio,
       mensagem_confirmacao: evento.mensagem_confirmacao || "Seu agendamento foi confirmado com sucesso!"
+    },
+    touched: {
+      lead: leadRef,
+      isNewLead: isNewLead,
+      agendamento: newAgendamento,
+      respostas: newRespostas,
+      crm: newCrm,
+      historico: newHist,
+      log: newLog
     }
   };
 }
@@ -1024,6 +1142,132 @@ function writeRowsToSheet(sheet, rows, colCount) {
   }
 }
 
+function appendRowsToSheetFast(ss, sheetName, headers, rows) {
+  if (!rows || rows.length === 0) return;
+  var sheet = getOrCreateSheet(ss, sheetName, headers);
+  var startRow = Math.max(2, sheet.getLastRow() + 1);
+  sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+function upsertLeadRowFast(ss, leadRow) {
+  var sheet = getOrCreateSheet(ss, "LEADS", SHEETS_SCHEMA.LEADS);
+  var lastRow = sheet.getLastRow();
+  var leadId = String(leadRow[0] || "");
+  if (lastRow >= 2 && leadId) {
+    var ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if (String(ids[i][0] || "") === leadId) {
+        sheet.getRange(i + 2, 1, 1, leadRow.length).setValues([leadRow]);
+        return;
+      }
+    }
+  }
+  sheet.getRange(Math.max(2, lastRow + 1), 1, 1, leadRow.length).setValues([leadRow]);
+}
+
+function syncBookingDeltaToSheets(ss, touched) {
+  if (!touched) return;
+  try {
+    if (touched.agendamento) {
+      var a = touched.agendamento;
+      appendRowsToSheetFast(ss, "AGENDAMENTOS", SHEETS_SCHEMA.AGENDAMENTOS, [[
+        a.id_agendamento || Utilities.getUuid(), a.protocolo || "", a.id_evento || "", a.id_lead || "",
+        a.data_agendamento || "", a.hora_inicio || "", a.hora_fim || "", a.status || "CONFIRMADO",
+        a.motivo_cancelamento || "", a.cancelado_em || "", a.criado_em || ""
+      ]]);
+    }
+
+    if (touched.lead) {
+      var l = touched.lead;
+      var leadRow = [
+        l.id_lead || Utilities.getUuid(), l.nome || "", l.whatsapp || "", l.email || "",
+        l.empresa || "", l.cargo || "", l.local || "", l.status_cliente || "LEAD", l.origem_primeiro_evento || "",
+        Number(l.total_agendamentos) || 0, l.data_ultimo_agendamento || "",
+        l.responsavel_id || "", l.observacoes || "", Boolean(l.excluido), l.excluido_em || "",
+        l.criado_em || "", l.atualizado_em || ""
+      ];
+      if (touched.isNewLead) {
+        appendRowsToSheetFast(ss, "LEADS", SHEETS_SCHEMA.LEADS, [leadRow]);
+      } else {
+        upsertLeadRowFast(ss, leadRow);
+      }
+    }
+
+    if (Array.isArray(touched.respostas) && touched.respostas.length > 0) {
+      var rspRows = touched.respostas.map(function(r) {
+        return [
+          r.id_resposta || Utilities.getUuid(), r.id_agendamento || "", r.id_lead || "",
+          r.id_campo || "", r.valor || "", r.criado_em || ""
+        ];
+      });
+      appendRowsToSheetFast(ss, "RESPOSTAS", SHEETS_SCHEMA.RESPOSTAS, rspRows);
+    }
+
+    if (touched.crm) {
+      var c = touched.crm;
+      appendRowsToSheetFast(ss, "CRM", SHEETS_SCHEMA.CRM, [[
+        c.id_oportunidade || Utilities.getUuid(), c.id_lead || "", c.id_agendamento_origem || "",
+        c.titulo || "", c.produto_nome || "", Number(c.produto_valor_mensal) || 0, Number(c.produto_parcelas) || 1,
+        c.estagio || "ENTRADA", c.sub_status || "FOLLOW",
+        Number(c.valor_estimado) || 0, Number(c.valor_fechado) || 0, c.responsavel_id || "",
+        c.data_proximo_followup || "", c.motivo_perda || "", c.data_fechamento || "",
+        Number(c.ordem_coluna) || 1, c.criado_em || "", c.atualizado_em || ""
+      ]]);
+    }
+
+    if (touched.historico) {
+      var hc = touched.historico;
+      appendRowsToSheetFast(ss, "HISTORICO_CRM", SHEETS_SCHEMA.HISTORICO_CRM, [[
+        hc.id_historico || Utilities.getUuid(), hc.id_oportunidade || "", hc.tipo || "NOTA",
+        hc.estagio_anterior || "", hc.estagio_novo || "", hc.descricao || "",
+        hc.usuario_id || "", hc.criado_em || ""
+      ]]);
+    }
+
+    if (touched.log) {
+      var lg = touched.log;
+      appendRowsToSheetFast(ss, "LOGS", SHEETS_SCHEMA.LOGS, [[
+        lg.id_log || Utilities.getUuid(), lg.nivel || "INFO", lg.origem || "",
+        lg.acao || "", lg.detalhes || "", lg.ip_ou_user_agent || "", lg.timestamp || ""
+      ]]);
+    }
+  } catch (eDelta) {}
+}
+
+function syncBookingStatusDeltaToSheets(ss, data) {
+  if (!data || typeof data !== "object") return;
+  mirrorArrayToSheet(ss, "AGENDAMENTOS", SHEETS_SCHEMA.AGENDAMENTOS, data.agendamentos, function(a) {
+    return [
+      a.id_agendamento || Utilities.getUuid(), a.protocolo || "", a.id_evento || "", a.id_lead || "",
+      a.data_agendamento || "", a.hora_inicio || "", a.hora_fim || "", a.status || "CONFIRMADO",
+      a.motivo_cancelamento || "", a.cancelado_em || "", a.criado_em || ""
+    ];
+  });
+  mirrorArrayToSheet(ss, "CRM", SHEETS_SCHEMA.CRM, data.crm, function(c) {
+    return [
+      c.id_oportunidade || Utilities.getUuid(), c.id_lead || "", c.id_agendamento_origem || "",
+      c.titulo || "", c.produto_nome || "", Number(c.produto_valor_mensal) || 0, Number(c.produto_parcelas) || 1,
+      c.estagio || "ENTRADA", c.sub_status || "FOLLOW",
+      Number(c.valor_estimado) || 0, Number(c.valor_fechado) || 0, c.responsavel_id || "",
+      c.data_proximo_followup || "", c.motivo_perda || "", c.data_fechamento || "",
+      Number(c.ordem_coluna) || 1, c.criado_em || "", c.atualizado_em || ""
+    ];
+  });
+  mirrorArrayToSheet(ss, "HISTORICO_CRM", SHEETS_SCHEMA.HISTORICO_CRM, data.historico_crm, function(hc) {
+    return [
+      hc.id_historico || Utilities.getUuid(), hc.id_oportunidade || "", hc.tipo || "NOTA",
+      hc.estagio_anterior || "", hc.estagio_novo || "", hc.descricao || "",
+      hc.usuario_id || "", hc.criado_em || ""
+    ];
+  });
+  mirrorArrayToSheet(ss, "LOGS", SHEETS_SCHEMA.LOGS, data.logs, function(lg) {
+    return [
+      lg.id_log || Utilities.getUuid(), lg.nivel || "INFO", lg.origem || "",
+      lg.acao || "", lg.detalhes || "", lg.ip_ou_user_agent || "", lg.timestamp || ""
+    ];
+  });
+}
+
 // =========================================================================
 // HELPERS DRIVE JSON, CACHE CHUNKED, UUID, SEGURANÇA E BACKUP
 // =========================================================================
@@ -1287,7 +1531,25 @@ function readDatabaseFromSheets(folder) {
   }
 }
 
-function loadAuthoritativeDatabase(folder, bypassCache) {
+function getRootJsonFileFast(folder) {
+  var props = PropertiesService.getScriptProperties();
+  var cachedId = props.getProperty("PROP_ROOT_JSON_ID");
+  if (cachedId) {
+    try {
+      var f = DriveApp.getFileById(cachedId);
+      if (f && !f.isTrashed()) return f;
+    } catch (e) {}
+  }
+  var rootFiles = folder.getFilesByName(ROOT_FILE_NAME);
+  if (rootFiles.hasNext()) {
+    var found = rootFiles.next();
+    try { props.setProperty("PROP_ROOT_JSON_ID", found.getId()); } catch (e) {}
+    return found;
+  }
+  return null;
+}
+
+function loadAuthoritativeDatabaseFast(folder, bypassCache) {
   if (!bypassCache) {
     var cached = getFromCache(CACHE_KEY_ROOT);
     if (cached) {
@@ -1297,10 +1559,10 @@ function loadAuthoritativeDatabase(folder, bypassCache) {
       } catch (eC) {}
     }
   }
-  var rootFiles = folder.getFilesByName(ROOT_FILE_NAME);
-  if (rootFiles.hasNext()) {
+  var rootFile = getRootJsonFileFast(folder);
+  if (rootFile) {
     try {
-      var parsedFile = JSON.parse(rootFiles.next().getBlob().getDataAsString("UTF-8"));
+      var parsedFile = JSON.parse(rootFile.getBlob().getDataAsString("UTF-8"));
       if (parsedFile && typeof parsedFile === "object" && Array.isArray(parsedFile.eventos)) {
         return parsedFile;
       }
@@ -1308,10 +1570,31 @@ function loadAuthoritativeDatabase(folder, bypassCache) {
   }
   var fromSheets = readDatabaseFromSheets(folder);
   if (fromSheets) {
-    try { upsertRootJsonFile(folder, JSON.stringify(fromSheets, null, 2)); } catch (eUp) {}
+    try { upsertRootJsonFileFast(folder, JSON.stringify(fromSheets)); } catch (eUp) {}
     return fromSheets;
   }
   return {};
+}
+
+function loadAuthoritativeDatabase(folder, bypassCache) {
+  return loadAuthoritativeDatabaseFast(folder, bypassCache);
+}
+
+function upsertRootJsonFileFast(folder, jsonContent) {
+  var props = PropertiesService.getScriptProperties();
+  var cachedId = props.getProperty("PROP_ROOT_JSON_ID");
+  if (cachedId) {
+    try {
+      var existing = DriveApp.getFileById(cachedId);
+      if (existing && !existing.isTrashed()) {
+        existing.setContent(jsonContent);
+        return existing;
+      }
+    } catch (e) {}
+  }
+  var saved = upsertRootJsonFile(folder, jsonContent);
+  try { props.setProperty("PROP_ROOT_JSON_ID", saved.getId()); } catch (e) {}
+  return saved;
 }
 
 function upsertRootJsonFile(folder, jsonContent) {
@@ -1424,13 +1707,26 @@ function invalidateDatabaseCache() {
 }
 
 function getOrCreateSpreadsheet(folder) {
+  var props = PropertiesService.getScriptProperties();
+  var cachedSsId = props.getProperty("PROP_SPREADSHEET_ID");
+  if (cachedSsId) {
+    try {
+      var ssCached = SpreadsheetApp.openById(cachedSsId);
+      if (ssCached) return ssCached;
+    } catch (e) {}
+  }
   try {
     var files = folder.getFilesByName(SPREADSHEET_BASE_NAME);
-    if (files.hasNext()) return SpreadsheetApp.openById(files.next().getId());
+    if (files.hasNext()) {
+      var ssFileFound = files.next();
+      try { props.setProperty("PROP_SPREADSHEET_ID", ssFileFound.getId()); } catch (e) {}
+      return SpreadsheetApp.openById(ssFileFound.getId());
+    }
   } catch (e) {}
   var newSs = SpreadsheetApp.create(SPREADSHEET_BASE_NAME);
   var ssFile = DriveApp.getFileById(newSs.getId());
   try { ssFile.moveTo(folder); } catch (e) { folder.addFile(ssFile); }
+  try { props.setProperty("PROP_SPREADSHEET_ID", newSs.getId()); } catch (e) {}
   return newSs;
 }
 
@@ -1461,13 +1757,32 @@ function mergeDatabaseObjects(existing, incoming) {
   return result;
 }
 
+function getCachedDriveFolder(propKey, folderName, parentFolder) {
+  var props = PropertiesService.getScriptProperties();
+  var cachedId = props.getProperty(propKey);
+  if (cachedId) {
+    try {
+      var fCached = DriveApp.getFolderById(cachedId);
+      if (fCached && !fCached.isTrashed()) return fCached;
+    } catch (e) {}
+  }
+  var resolved = getOrCreateFolder(folderName, parentFolder);
+  try { props.setProperty(propKey, resolved.getId()); } catch (e) {}
+  return resolved;
+}
+
+function getDataFolderFast() {
+  var rootFolder = getCachedDriveFolder("PROP_ROOT_FOLDER_ID", ROOT_FOLDER_NAME, null);
+  return getCachedDriveFolder("PROP_DATA_FOLDER_ID", DATA_FOLDER_NAME, rootFolder);
+}
+
 function getAgendaAtivaFolders() {
-  var rootFolder = getOrCreateFolder(ROOT_FOLDER_NAME);
+  var rootFolder = getCachedDriveFolder("PROP_ROOT_FOLDER_ID", ROOT_FOLDER_NAME, null);
   return {
     root: rootFolder,
-    data: getOrCreateFolder(DATA_FOLDER_NAME, rootFolder),
-    backup: getOrCreateFolder(BACKUP_FOLDER_NAME, rootFolder),
-    media: getOrCreateFolder(MEDIA_FOLDER_NAME, rootFolder)
+    data: getCachedDriveFolder("PROP_DATA_FOLDER_ID", DATA_FOLDER_NAME, rootFolder),
+    backup: getCachedDriveFolder("PROP_BACKUP_FOLDER_ID", BACKUP_FOLDER_NAME, rootFolder),
+    media: getCachedDriveFolder("PROP_MEDIA_FOLDER_ID", MEDIA_FOLDER_NAME, rootFolder)
   };
 }
 
@@ -1480,11 +1795,17 @@ function getOrCreateFolder(folderName, parentFolder) {
 
 function setupDailyBackupTrigger() {
   try {
+    var props = PropertiesService.getScriptProperties();
+    if (props.getProperty("PROP_DAILY_TRIGGER_OK") === "1") return;
     var triggers = ScriptApp.getProjectTriggers();
     for (var i = 0; i < triggers.length; i++) {
-      if (triggers[i].getHandlerFunction() === "runDailyBackup") return;
+      if (triggers[i].getHandlerFunction() === "runDailyBackup") {
+        props.setProperty("PROP_DAILY_TRIGGER_OK", "1");
+        return;
+      }
     }
     ScriptApp.newTrigger("runDailyBackup").timeBased().everyDays(1).atHour(0).create();
+    props.setProperty("PROP_DAILY_TRIGGER_OK", "1");
   } catch (e) {}
 }
 

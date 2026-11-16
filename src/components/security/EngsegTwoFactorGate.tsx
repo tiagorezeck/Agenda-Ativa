@@ -17,6 +17,7 @@ import {
   verifyEngseg2FACode
 } from '../../services/engsegService';
 import { buildPublicEventPath, isCloudActive } from '../../services/driveSyncService';
+import { isEmailValido, sanitizarEmailInput } from '../../utils/formatters';
 
 interface EngsegTwoFactorGateProps {
   onVerified: () => void;
@@ -46,8 +47,8 @@ export const EngsegTwoFactorGate: React.FC<EngsegTwoFactorGateProps> = ({
     setLocalTestCode(null);
 
     const cleanEmail = email.trim();
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setErrorMsg('Informe um e-mail válido para receber o código de verificação.');
+    if (!isEmailValido(cleanEmail)) {
+      setErrorMsg('Informe um e-mail válido contendo @ para receber o código de verificação.');
       return;
     }
 
@@ -133,9 +134,12 @@ export const EngsegTwoFactorGate: React.FC<EngsegTwoFactorGateProps> = ({
               <Mail className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="email"
+                inputMode="email"
                 required
+                pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                title="Informe um e-mail válido contendo @"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => setEmail(sanitizarEmailInput(e.target.value))}
                 placeholder="seuemail@empresa.com.br"
                 className="w-full pl-9 pr-3.5 py-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
               />

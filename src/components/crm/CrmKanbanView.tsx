@@ -1,17 +1,29 @@
 import React, { useState, useMemo } from 'react';
 import { storage } from '../../services/storageService';
-import { CrmOportunidadeEntity, EstagioCrm, TipoHistoricoCrm } from '../../types/database';
-import { formatarMoedaBRL, formatarDataBR, formatarDataHoraBR, gerarCodigoAleatorio } from '../../utils/formatters';
+import {
+  AgendamentoEntity,
+  CrmOportunidadeEntity,
+  EstagioCrm,
+  EventoEntity,
+  LeadEntity,
+  StatusAgendamento,
+  TipoHistoricoCrm,
+  UsuarioEntity
+} from '../../types/database';
+import { formatarMoedaBRL, formatarDataBR, formatarDataHoraBR, formatarTelefoneBR, gerarCodigoAleatorio } from '../../utils/formatters';
 import {
   Plus,
   Search,
   DollarSign,
   Clock,
+  Calendar,
   X,
   AlertOctagon,
   Zap,
   PauseCircle,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Filter,
+  RotateCcw
 } from 'lucide-react';
 
 export type ColunaCrmId = 'ENTRADA' | 'REUNIAO' | 'FOLLOW_UP_STAND_BY' | 'GANHO' | 'PERDIDO' | 'CANCELADO';
@@ -37,6 +49,9 @@ export const CrmKanbanView: React.FC = () => {
   const crmCards = db.crm;
 
   const [busca, setBusca] = useState('');
+  const [eventoFiltro, setEventoFiltro] = useState('todos');
+  const [dataFiltro, setDataFiltro] = useState('todas');
+  const [horarioFiltro, setHorarioFiltro] = useState('todos');
   const [responsavelFiltro, setResponsavelFiltro] = useState('todos');
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
 
@@ -63,6 +78,53 @@ export const CrmKanbanView: React.FC = () => {
 
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Mapas de acesso rápido para relacionar Agendamento, Evento, Lead e Responsável
+  const agendamentosById = useMemo(() => {
+    const map = new Map<string, AgendamentoEntity>();
+    db.agendamentos.forEach((a) => map.set(a.id_agendamento, a));
+    return map;
+  }, [db.agendamentos, refreshKey]);
+
+  const eventosById = useMemo(() => {
+    const map = new Map<string, EventoEntity>();
+    db.eventos.forEach((ev) => map.set(ev.id_evento, ev));
+    return map;
+  }, [db.eventos, refreshKey]);
+
+  const leadsById = useMemo(() => {
+    const map = new Map<string, LeadEntity>();
+    db.leads.forEach((l) => map.set(l.id_lead, l));
+    return map;
+  }, [db.leads, refreshKey]);
+
+  const usuariosById = useMemo(() => {
+    const map = new Map<string, UsuarioEntity>();
+    db.usuarios.forEach((u) => map.set(u.id_usuario, u));
+    return map;
+  }, [db.usuarios, refreshKey]);
+
+  const getCardContext = (card: CrmOportunidadeEntity) => {
+    const lead = leadsById.get(card.id_lead);
+    const agendamento = card.id_agendamento_origem
+      ? agendamentosById.get(card.id_agendamento_origem)
+      : undefined;
+
+    let evento: EventoEntity | undefined = agendamento?.id_evento
+      ? eventosById.get(agendamento.id_evento)
+      : undefined;
+
+    if (!evento && card.produto_nome) {
+      evento = db.eventos.find(
+        (ev) => ev.produto_nome === card.produto_nome || ev.nome === card.produto_nome
+      );
+    }
+    if (!evento && !agendamento && lead?.origem_primeiro_evento) {
+      evento = eventosById.get(lead.origem_primeiro_evento);
+    }
+
+    return { lead, agendamento, evento };
+  };
+
   // Helper para verificar se o card pertence à coluna
   const isCardInColumn = (card: CrmOportunidadeEntity, colunaId: ColunaCrmId): boolean => {
     if (colunaId === 'FOLLOW_UP_STAND_BY') {
@@ -82,27 +144,142 @@ export const CrmKanbanView: React.FC = () => {
     return 'FOLLOW';
   };
 
-  // Cards Filtrados
-  const cardsFiltrados = useMemo(() => {
+  const handleSelectEventoFiltro = (nextEventoId: string) => {
+    setEventoFiltro(nextEventoId);
+    setDataFiltro('todas');
+    setHorarioFiltro('todos');
+  };
+
+  const handleLimparFiltros = () => {
+    setBusca('');
+    setEventoFiltro('todos');
+    setDataFiltro('todas');
+    setHorarioFiltro('todos');
+    setResponsavelFiltro('todos');
+  };
+
+  const temFiltroAtivo =
+    Boolean(busca.trim()) ||
+    eventoFiltro !== 'todos' ||
+    dataFiltro !== 'todas' ||
+    horarioFiltro !== 'todos' ||
+    responsavelFiltro !== 'todos';
+
+  // Contagem de cards por Evento para o seletor
+  const contagemPorEvento = useMemo(() => {
+    const counts = new Map<string, number>();
+    crmCards.forEach((card) => {
+      const { evento } = getCardContext(card);
+      if (evento) {
+        counts.set(evento.id_evento, (counts.get(evento.id_evento) || 0) + 1);
+      }
+    });
+    return counts;
+  }, [crmCards, agendamentosById, eventosById, leadsById, db.eventos]);
+
+  // Cards pré-filtrados por Evento, Responsável e Busca (base para listar Datas e Horários disponíveis)
+  const cardsBaseEventoBusca = useMemo(() => {
+    const termo = busca.trim().toLowerCase();
     return crmCards.filter((card) => {
       if (responsavelFiltro !== 'todos' && card.responsavel_id !== responsavelFiltro) return false;
-      if (!busca.trim()) return true;
-
-      const termo = busca.toLowerCase();
-      const lead = db.leads.find(l => l.id_lead === card.id_lead);
+      const { lead, agendamento, evento } = getCardContext(card);
+      if (eventoFiltro !== 'todos' && evento?.id_evento !== eventoFiltro) return false;
+      if (!termo) return true;
       return (
         card.titulo.toLowerCase().includes(termo) ||
-        (lead && lead.nome.toLowerCase().includes(termo))
+        (lead && (
+          lead.nome.toLowerCase().includes(termo) ||
+          (lead.local || '').toLowerCase().includes(termo) ||
+          (lead.whatsapp || '').includes(termo)
+        )) ||
+        (agendamento && agendamento.protocolo.toLowerCase().includes(termo)) ||
+        (evento && evento.nome.toLowerCase().includes(termo))
       );
     });
-  }, [crmCards, busca, responsavelFiltro, db.leads, refreshKey]);
+  }, [crmCards, busca, responsavelFiltro, eventoFiltro, agendamentosById, eventosById, leadsById, db.eventos]);
 
-  // Totalizador de Vendas Conquistadas
+  // Datas disponíveis nos cards do filtro atual
+  const datasDisponiveis = useMemo(() => {
+    const set = new Set<string>();
+    cardsBaseEventoBusca.forEach((card) => {
+      const agd = card.id_agendamento_origem ? agendamentosById.get(card.id_agendamento_origem) : undefined;
+      if (agd?.data_agendamento) {
+        set.add(agd.data_agendamento);
+      }
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [cardsBaseEventoBusca, agendamentosById]);
+
+  // Lista de Horários da Agenda (combina slots configurados do Evento + horários com agendamentos no CRM)
+  const horariosAgendaFiltro = useMemo(() => {
+    const slotMap = new Map<string, { hora_inicio: string; hora_fim: string; count: number }>();
+
+    if (eventoFiltro !== 'todos') {
+      db.horarios
+        .filter((h) => h.id_evento === eventoFiltro && h.ativo)
+        .forEach((h) => {
+          if (h.hora_inicio && !slotMap.has(h.hora_inicio)) {
+            slotMap.set(h.hora_inicio, {
+              hora_inicio: h.hora_inicio,
+              hora_fim: h.hora_fim || h.hora_inicio,
+              count: 0
+            });
+          }
+        });
+    } else {
+      db.horarios
+        .filter((h) => h.ativo)
+        .forEach((h) => {
+          if (h.hora_inicio && !slotMap.has(h.hora_inicio)) {
+            slotMap.set(h.hora_inicio, {
+              hora_inicio: h.hora_inicio,
+              hora_fim: h.hora_fim || h.hora_inicio,
+              count: 0
+            });
+          }
+        });
+    }
+
+    cardsBaseEventoBusca.forEach((card) => {
+      const agd = card.id_agendamento_origem ? agendamentosById.get(card.id_agendamento_origem) : undefined;
+      if (!agd || !agd.hora_inicio) return;
+      if (dataFiltro !== 'todas' && agd.data_agendamento !== dataFiltro) return;
+
+      const existing = slotMap.get(agd.hora_inicio);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        slotMap.set(agd.hora_inicio, {
+          hora_inicio: agd.hora_inicio,
+          hora_fim: agd.hora_fim || agd.hora_inicio,
+          count: 1
+        });
+      }
+    });
+
+    const list = Array.from(slotMap.values());
+    // Quando nenhum evento específico estiver selecionado, prioriza horários configurados ou com leads
+    return list.sort((a, b) => a.hora_inicio.localeCompare(b.hora_inicio));
+  }, [eventoFiltro, dataFiltro, db.horarios, cardsBaseEventoBusca, agendamentosById]);
+
+  // Cards Filtrados finais (Evento + Data + Horário + Responsável + Busca)
+  const cardsFiltrados = useMemo(() => {
+    return cardsBaseEventoBusca.filter((card) => {
+      if (dataFiltro === 'todas' && horarioFiltro === 'todos') return true;
+      const agd = card.id_agendamento_origem ? agendamentosById.get(card.id_agendamento_origem) : undefined;
+      if (!agd) return false;
+      if (dataFiltro !== 'todas' && agd.data_agendamento !== dataFiltro) return false;
+      if (horarioFiltro !== 'todos' && agd.hora_inicio !== horarioFiltro) return false;
+      return true;
+    });
+  }, [cardsBaseEventoBusca, dataFiltro, horarioFiltro, agendamentosById]);
+
+  // Totalizador de Vendas Conquistadas (reflete o filtro ativo, ex: só o evento selecionado)
   const valorTotalGanho = useMemo(() => {
-    return crmCards
+    return cardsFiltrados
       .filter(c => c.estagio === 'GANHO')
       .reduce((acc, c) => acc + (c.valor_fechado || c.valor_estimado || 0), 0);
-  }, [crmCards, refreshKey]);
+  }, [cardsFiltrados]);
 
   const handleDragStart = (idOportunidade: string) => {
     setDraggedCardId(idOportunidade);
@@ -226,22 +403,55 @@ export const CrmKanbanView: React.FC = () => {
     return db.historico_crm.filter(h => h.id_oportunidade === cardEmEdicao.id_oportunidade);
   }, [cardEmEdicao, db.historico_crm, refreshKey]);
 
+  const handleAlterarStatusAgendamento = (idAgendamento: string, novoStatus: StatusAgendamento) => {
+    storage.updateAgendamentoStatus(
+      idAgendamento,
+      novoStatus,
+      novoStatus === 'CANCELADO' ? 'Cancelado pelo operador no CRM Kanban' : undefined
+    );
+    setRefreshKey(k => k + 1);
+  };
+
+  const eventoSelecionadoObj = eventoFiltro !== 'todos' ? eventosById.get(eventoFiltro) : undefined;
+
+  const formatStatusAgendamentoLabel = (status?: StatusAgendamento) => {
+    switch (status) {
+      case 'REALIZADO':
+        return { label: 'Realizado', cls: 'bg-sky-100 text-sky-800 dark:bg-sky-900/50 dark:text-sky-300 border-sky-300/70 dark:border-sky-700/60' };
+      case 'CANCELADO':
+        return { label: 'Cancelado', cls: 'bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300 border-rose-300/70 dark:border-rose-700/60' };
+      case 'NO_SHOW':
+        return { label: 'Não compareceu', cls: 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300 border-amber-300/70 dark:border-amber-700/60' };
+      default:
+        return { label: 'Confirmado', cls: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 border-emerald-300/70 dark:border-emerald-700/60' };
+    }
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Top Banner & Ações */}
-      <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm transition-colors">
+      <div className="p-5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm transition-colors">
         <div>
-          <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
-            CRM Kanban Comercial
-          </h2>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-xl">
-            Todo agendamento gera automaticamente uma oportunidade na coluna <strong>Entrada</strong>. Arraste entre as 6 colunas para gerenciar o funil.
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
+              CRM Kanban Comercial
+            </h2>
+            {eventoSelecionadoObj && (
+              <span className="px-2.5 py-0.5 rounded-md bg-orange-500/10 border border-orange-500/30 text-orange-600 dark:text-orange-400 text-xs font-semibold">
+                Evento: {eventoSelecionadoObj.nome}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-2xl">
+            Filtre por Evento e Horário da Agenda para controlar os atendimentos e gerenciar cada lead no funil ({cardsFiltrados.length} {cardsFiltrados.length === 1 ? 'oportunidade' : 'oportunidades'}).
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <div className="text-right px-3 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl">
-            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Total Ganho:</span>
+            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">
+              {eventoSelecionadoObj ? 'Ganho no Filtro:' : 'Total Ganho:'}
+            </span>
             <p className="text-sm font-bold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
               {formatarMoedaBRL(valorTotalGanho)}
             </p>
@@ -257,41 +467,169 @@ export const CrmKanbanView: React.FC = () => {
         </div>
       </div>
 
-      {/* Barra de Filtros */}
-      <div className="p-4 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl flex flex-wrap items-center justify-between gap-4 shadow-sm transition-colors">
-        <div className="flex-1 min-w-[240px] relative">
-          <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={busca}
-            onChange={(e) => setBusca(e.target.value)}
-            placeholder="Pesquisar oportunidades ou nomes de leads..."
-            className="w-full pl-9 pr-4 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-orange-500"
-          />
+      {/* Barra de Filtros: Busca, Evento, Data, Horário da Agenda e Responsável */}
+      <div className="p-4 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3 shadow-sm transition-colors">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+          <div className="lg:col-span-4 relative">
+            <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Pesquisar lead, local, protocolo ou título..."
+              className="w-full pl-9 pr-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-orange-500"
+            />
+          </div>
+
+          <div className="lg:col-span-3 flex items-center gap-1.5">
+            <Filter className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+            <select
+              value={eventoFiltro}
+              onChange={(e) => handleSelectEventoFiltro(e.target.value)}
+              aria-label="Filtrar Kanban por Evento"
+              className="w-full px-2.5 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+            >
+              <option value="todos">Todos os Eventos ({crmCards.length})</option>
+              {db.eventos.map(ev => (
+                <option key={ev.id_evento} value={ev.id_evento}>
+                  {ev.nome} ({contagemPorEvento.get(ev.id_evento) || 0})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="lg:col-span-2 flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+            <select
+              value={dataFiltro}
+              onChange={(e) => setDataFiltro(e.target.value)}
+              aria-label="Filtrar Kanban por Data do Agendamento"
+              className="w-full px-2.5 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+            >
+              <option value="todas">Todas as Datas</option>
+              {datasDisponiveis.map(dt => (
+                <option key={dt} value={dt}>
+                  {formatarDataBR(dt)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="lg:col-span-2 flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+            <select
+              value={horarioFiltro}
+              onChange={(e) => setHorarioFiltro(e.target.value)}
+              aria-label="Filtrar Kanban por Horário da Agenda"
+              className="w-full px-2.5 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+            >
+              <option value="todos">Todos os Horários</option>
+              {horariosAgendaFiltro.map(slot => (
+                <option key={slot.hora_inicio} value={slot.hora_inicio}>
+                  {slot.hora_inicio}{slot.hora_fim && slot.hora_fim !== slot.hora_inicio ? ` - ${slot.hora_fim}` : ''} ({slot.count})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="lg:col-span-1 flex items-center justify-end gap-1.5">
+            <select
+              value={responsavelFiltro}
+              onChange={(e) => setResponsavelFiltro(e.target.value)}
+              aria-label="Filtrar por Responsável"
+              className="w-full px-2 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+            >
+              <option value="todos">Resp.</option>
+              {db.usuarios.map(u => (
+                <option key={u.id_usuario} value={u.id_usuario}>
+                  {u.nome.split(' ')[0]}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-neutral-500 dark:text-neutral-400">Responsável:</span>
-          <select
-            value={responsavelFiltro}
-            onChange={(e) => setResponsavelFiltro(e.target.value)}
-            className="px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
-          >
-            <option value="todos">Todos os Responsáveis</option>
-            {db.usuarios.map(u => (
-              <option key={u.id_usuario} value={u.id_usuario}>
-                {u.nome}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Faixa de Horários da Agenda para separar leads por horário marcado em 1 clique */}
+        {horariosAgendaFiltro.length > 0 && (
+          <div className="pt-2.5 border-t border-neutral-200/80 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 mr-1 flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-orange-500" />
+                Horários da Agenda:
+              </span>
+              <button
+                type="button"
+                onClick={() => setHorarioFiltro('todos')}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                  horarioFiltro === 'todos'
+                    ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
+                    : 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:border-orange-400'
+                }`}
+              >
+                Todos ({cardsBaseEventoBusca.filter(c => {
+                  if (dataFiltro === 'todas') return true;
+                  const ag = c.id_agendamento_origem ? agendamentosById.get(c.id_agendamento_origem) : undefined;
+                  return ag?.data_agendamento === dataFiltro;
+                }).length})
+              </button>
+              {horariosAgendaFiltro.map((slot) => {
+                const isSelected = horarioFiltro === slot.hora_inicio;
+                return (
+                  <button
+                    key={slot.hora_inicio}
+                    type="button"
+                    onClick={() => setHorarioFiltro(isSelected ? 'todos' : slot.hora_inicio)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold border transition-colors flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
+                        : slot.count > 0
+                          ? 'bg-neutral-50 dark:bg-neutral-950 text-neutral-800 dark:text-neutral-200 border-neutral-300 dark:border-neutral-700 hover:border-orange-400'
+                          : 'bg-neutral-50/50 dark:bg-neutral-950/40 text-neutral-400 dark:text-neutral-500 border-neutral-200 dark:border-neutral-800 hover:border-neutral-400'
+                    }`}
+                  >
+                    <span>{slot.hora_inicio}</span>
+                    <span className={`px-1 rounded text-[10px] ${
+                      isSelected
+                        ? 'bg-white/20 text-white'
+                        : 'bg-neutral-200/80 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300'
+                    }`}>
+                      {slot.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {temFiltroAtivo && (
+              <button
+                type="button"
+                onClick={handleLimparFiltros}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center gap-1 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Limpar filtros</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 6 Colunas do Kanban ajustadas para caber na página (com rolagem se telas menores ou colunas adicionais) */}
       <div className="w-full overflow-x-auto pb-4 custom-scrollbar">
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2.5 min-w-[980px] xl:min-w-0 w-full">
           {COLUNAS_CRM.map((coluna) => {
-            const cardsDaColuna = cardsFiltrados.filter(c => isCardInColumn(c, coluna.id));
+            const cardsDaColuna = cardsFiltrados
+              .filter(c => isCardInColumn(c, coluna.id))
+              .sort((a, b) => {
+                const agA = a.id_agendamento_origem ? agendamentosById.get(a.id_agendamento_origem) : undefined;
+                const agB = b.id_agendamento_origem ? agendamentosById.get(b.id_agendamento_origem) : undefined;
+                if (agA && agB) {
+                  return `${agA.data_agendamento} ${agA.hora_inicio}`.localeCompare(`${agB.data_agendamento} ${agB.hora_inicio}`);
+                }
+                if (agA) return -1;
+                if (agB) return 1;
+                return (a.ordem_coluna || 0) - (b.ordem_coluna || 0);
+              });
             const totalValorColuna = cardsDaColuna.reduce(
               (acc, c) => acc + (c.valor_fechado || c.valor_estimado || 0),
               0
@@ -327,10 +665,11 @@ export const CrmKanbanView: React.FC = () => {
                     </div>
                   ) : (
                     cardsDaColuna.map((card) => {
-                      const lead = db.leads.find(l => l.id_lead === card.id_lead);
-                      const resp = db.usuarios.find(u => u.id_usuario === card.responsavel_id);
+                      const { lead, agendamento, evento } = getCardContext(card);
+                      const resp = usuariosById.get(card.responsavel_id);
                       const subStatus = getCardSubStatus(card);
                       const isFollowUpCol = coluna.id === 'FOLLOW_UP_STAND_BY';
+                      const agStatusInfo = agendamento ? formatStatusAgendamentoLabel(agendamento.status) : null;
 
                       // Definição visual conforme instrução do usuário:
                       // "mudando o card de cor, follow fica amarelo e stand fica cinza"
@@ -362,12 +701,58 @@ export const CrmKanbanView: React.FC = () => {
                             </span>
                           </div>
 
-                          {/* Lead & Local / Produto */}
+                          {/* Lead & Local */}
                           {lead && (
                             <p className="text-[11px] font-medium truncate text-orange-600 dark:text-orange-400">
                               {lead.nome} {(lead.local || lead.empresa) ? `· ${lead.local || lead.empresa}` : ''}
                             </p>
                           )}
+
+                          {/* Evento (exibido quando visualizando todos os eventos) */}
+                          {evento && eventoFiltro === 'todos' && (
+                            <p className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 truncate">
+                              Evento: {evento.nome}
+                            </p>
+                          )}
+
+                          {/* Data e Hora do Agendamento para controle no CRM */}
+                          {agendamento ? (
+                            <div className="p-1.5 rounded-md bg-white/80 dark:bg-neutral-900/90 border border-neutral-200/90 dark:border-neutral-800 space-y-1">
+                              <div className="flex items-center justify-between gap-1 text-[10px] font-mono font-semibold text-neutral-800 dark:text-neutral-200">
+                                <span className="flex items-center gap-1 truncate">
+                                  <Calendar className="w-3 h-3 text-orange-500 shrink-0" />
+                                  <span>{formatarDataBR(agendamento.data_agendamento)}</span>
+                                </span>
+                                <span className="flex items-center gap-1 text-orange-600 dark:text-orange-400 shrink-0">
+                                  <Clock className="w-3 h-3 shrink-0" />
+                                  <span>
+                                    {agendamento.hora_inicio}
+                                    {agendamento.hora_fim && agendamento.hora_fim !== agendamento.hora_inicio
+                                      ? `–${agendamento.hora_fim}`
+                                      : ''}
+                                  </span>
+                                </span>
+                              </div>
+                              {agStatusInfo && (
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold ${agStatusInfo.cls}`}>
+                                    {agStatusInfo.label}
+                                  </span>
+                                  <span className="text-[9px] font-mono opacity-60 truncate">
+                                    {agendamento.protocolo}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            card.data_proximo_followup && (
+                              <div className="flex items-center gap-1 text-[10px] opacity-70 font-mono">
+                                <Clock className="w-3 h-3 shrink-0" />
+                                <span className="truncate">Prev: {formatarDataBR(card.data_proximo_followup)}</span>
+                              </div>
+                            )
+                          )}
+
                           {card.produto_nome && (
                             <p className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
                               Produto: {card.produto_nome}
@@ -388,11 +773,11 @@ export const CrmKanbanView: React.FC = () => {
                             </span>
                           </div>
 
-                          {/* Data de Follow-up */}
-                          {card.data_proximo_followup && (
+                          {/* Data de Follow-up separada apenas se diferente do dia agendado */}
+                          {agendamento && card.data_proximo_followup && card.data_proximo_followup !== agendamento.data_agendamento && (
                             <div className="flex items-center gap-1 text-[10px] opacity-70 font-mono">
                               <Clock className="w-3 h-3 shrink-0" />
-                              <span className="truncate">Prev: {formatarDataBR(card.data_proximo_followup)}</span>
+                              <span className="truncate">Follow-up: {formatarDataBR(card.data_proximo_followup)}</span>
                             </div>
                           )}
 
@@ -653,8 +1038,13 @@ export const CrmKanbanView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal 4: Detalhes, Anotações e Histórico */}
-      {cardEmEdicao && (
+      {/* Modal 4: Detalhes, Controle do Agendamento, Anotações e Histórico */}
+      {cardEmEdicao && (() => {
+        const modalCtx = getCardContext(cardEmEdicao);
+        const modalAgd = modalCtx.agendamento;
+        const modalLead = modalCtx.lead;
+        const modalEvt = modalCtx.evento;
+        return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 dark:bg-black/80 backdrop-blur-sm">
           <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-neutral-900 dark:text-neutral-100 transition-colors">
             {/* Header */}
@@ -663,6 +1053,7 @@ export const CrmKanbanView: React.FC = () => {
                 <h3 className="text-base font-bold">{cardEmEdicao.titulo}</h3>
                 <p className="text-xs text-neutral-400 font-mono">
                   ID: {cardEmEdicao.id_oportunidade} · Estágio: {cardEmEdicao.estagio}
+                  {modalEvt ? ` · Evento: ${modalEvt.nome}` : ''}
                 </p>
               </div>
               <button
@@ -674,7 +1065,66 @@ export const CrmKanbanView: React.FC = () => {
             </div>
 
             {/* Content */}
-            <div className="p-6 space-y-6 flex-1 overflow-y-auto">
+            <div className="p-6 space-y-5 flex-1 overflow-y-auto">
+              {/* Controle de Data, Hora e Status do Agendamento */}
+              {modalAgd && (
+                <div className="p-4 bg-orange-50/70 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/50 rounded-xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span className="inline-flex items-center gap-1.5 font-bold text-neutral-900 dark:text-white font-mono">
+                        <Calendar className="w-4 h-4 text-orange-500" />
+                        {formatarDataBR(modalAgd.data_agendamento)}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 font-bold text-orange-600 dark:text-orange-400 font-mono">
+                        <Clock className="w-4 h-4" />
+                        {modalAgd.hora_inicio}{modalAgd.hora_fim && modalAgd.hora_fim !== modalAgd.hora_inicio ? ` às ${modalAgd.hora_fim}` : ''}
+                      </span>
+                      <span className="text-[11px] font-mono text-neutral-500 dark:text-neutral-400">
+                        {modalAgd.protocolo}
+                      </span>
+                    </div>
+
+                    {modalLead && (
+                      <span className="text-[11px] text-neutral-600 dark:text-neutral-300 font-medium">
+                        {modalLead.whatsapp ? formatarTelefoneBR(modalLead.whatsapp) : ''}
+                        {(modalLead.local || modalLead.empresa) ? ` · ${modalLead.local || modalLead.empresa}` : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-orange-200/70 dark:border-orange-900/40">
+                    <span className="text-[11px] font-semibold text-neutral-600 dark:text-neutral-300">
+                      Status do Atendimento:
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(['CONFIRMADO', 'REALIZADO', 'NO_SHOW', 'CANCELADO'] as StatusAgendamento[]).map((st) => {
+                        const ativo = modalAgd.status === st;
+                        const labelMap: Record<StatusAgendamento, string> = {
+                          CONFIRMADO: 'Confirmado',
+                          REALIZADO: 'Realizado',
+                          NO_SHOW: 'Não compareceu',
+                          CANCELADO: 'Cancelado'
+                        };
+                        return (
+                          <button
+                            key={st}
+                            type="button"
+                            onClick={() => handleAlterarStatusAgendamento(modalAgd.id_agendamento, st)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                              ativo
+                                ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
+                                : 'bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-700 hover:border-orange-400'
+                            }`}
+                          >
+                            {labelMap[st]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Botão de Toggle Follow / Stand dentro do Modal também */}
               <div className="p-3 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl flex items-center justify-between">
                 <div>
@@ -834,7 +1284,8 @@ export const CrmKanbanView: React.FC = () => {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

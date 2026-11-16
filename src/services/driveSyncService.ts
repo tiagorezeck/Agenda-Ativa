@@ -672,6 +672,33 @@ export const fetchFromGoogleDrive = async (
 };
 
 /**
+ * Puxar apenas os dados públicos necessários para a página de agendamento (ultra-rápido via cache)
+ */
+export const fetchPublicBookingFromGoogleDrive = async (
+  url: string | undefined,
+  token?: string,
+  nocache: boolean = false
+) => {
+  saveDriveConfig({ syncStatus: 'syncing' });
+  try {
+    const res = await executeDriveRequest({
+      targetUrl: url || undefined,
+      action: 'GET_PUBLIC_BOOKING',
+      apiToken: token,
+      nocache
+    });
+    saveDriveConfig({
+      syncStatus: 'synced',
+      lastSyncTimestamp: Date.now()
+    });
+    return res;
+  } catch (err) {
+    saveDriveConfig({ syncStatus: 'error' });
+    throw err;
+  }
+};
+
+/**
  * Listar arquivos e checkpoints na pasta Agenda Ativa/AppDatabase_Data
  */
 export const listDriveFiles = async (url?: string, token?: string): Promise<DriveFileEntry[]> => {

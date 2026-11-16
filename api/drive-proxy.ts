@@ -3,6 +3,7 @@ const GET_ACTIONS = new Set([
   'test',
   'get',
   'GET_DATABASE',
+  'GET_PUBLIC_BOOKING',
   'GET_EVENT_BY_SLUG',
   'list_files',
   'get_file'
