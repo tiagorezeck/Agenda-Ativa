@@ -439,66 +439,65 @@ export const CrmKanbanView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-4">
-      {/* Top Banner & Ações */}
-      <div className="p-5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm transition-colors">
-        <div>
+    <div className="space-y-3">
+      {/* Card Unificado: Cabeçalho & Filtros Compactos */}
+      <div className="p-3.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3 shadow-sm transition-colors">
+        {/* Linha 1: Título, contagem, total ganho e botão Nova Oportunidade */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2.5 border-b border-neutral-200 dark:border-neutral-800">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
+            <h2 className="text-base font-bold text-neutral-900 dark:text-white tracking-tight">
               CRM Kanban Comercial
             </h2>
             {eventoSelecionadoObj && (
-              <span className="px-2.5 py-0.5 rounded-md bg-orange-500/10 border border-orange-500/30 text-orange-600 dark:text-orange-400 text-xs font-semibold">
+              <span className="px-2 py-0.5 rounded-md bg-orange-500/10 border border-orange-500/30 text-orange-600 dark:text-orange-400 text-[11px] font-semibold">
                 Evento: {eventoSelecionadoObj.nome}
               </span>
             )}
-          </div>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-2xl">
-            Filtre por Evento e Horário da Agenda para controlar os atendimentos e gerenciar cada lead no funil ({cardsFiltrados.length} {cardsFiltrados.length === 1 ? 'oportunidade' : 'oportunidades'}).
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="text-right px-3 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl">
-            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">
-              {eventoSelecionadoObj ? 'Ganho no Filtro:' : 'Total Ganho:'}
+            <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              ({cardsFiltrados.length} {cardsFiltrados.length === 1 ? 'oportunidade' : 'oportunidades'})
             </span>
-            <p className="text-sm font-bold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
-              {formatarMoedaBRL(valorTotalGanho)}
-            </p>
           </div>
 
-          <button
-            onClick={() => setModalNovoCard(true)}
-            className="px-3.5 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-orange-600/30 flex items-center gap-1.5 transition-colors shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Nova Oportunidade</span>
-          </button>
-        </div>
-      </div>
+          <div className="flex items-center gap-2.5">
+            <div className="text-right px-2.5 py-1 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-lg">
+              <span className="text-[9px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold mr-1.5">
+                {eventoSelecionadoObj ? 'Ganho:' : 'Total Ganho:'}
+              </span>
+              <span className="text-xs font-bold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                {formatarMoedaBRL(valorTotalGanho)}
+              </span>
+            </div>
 
-      {/* Barra de Filtros: Busca, Evento, Data, Horário da Agenda e Responsável */}
-      <div className="p-4 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3 shadow-sm transition-colors">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+            <button
+              onClick={() => setModalNovoCard(true)}
+              className="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold shadow-xs flex items-center gap-1 transition-colors shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Nova Oportunidade</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Linha 2: Filtros Compactos (Busca, Evento, Data, Horário e Responsável) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2 items-center">
           <div className="lg:col-span-4 relative">
-            <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={busca}
               onChange={(e) => setBusca(e.target.value)}
-              placeholder="Pesquisar lead, local, protocolo ou título..."
-              className="w-full pl-9 pr-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-orange-500"
+              placeholder="Pesquisar lead, local, protocolo..."
+              className="w-full pl-8 pr-2.5 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white placeholder-neutral-400 focus:outline-none focus:border-orange-500"
             />
           </div>
 
-          <div className="lg:col-span-3 flex items-center gap-1.5">
-            <Filter className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+          <div className="lg:col-span-3 flex items-center gap-1">
+            <Filter className="w-3 h-3 text-orange-500 shrink-0" />
             <select
               value={eventoFiltro}
               onChange={(e) => handleSelectEventoFiltro(e.target.value)}
               aria-label="Filtrar Kanban por Evento"
-              className="w-full px-2.5 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+              className="w-full px-2 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500 truncate"
             >
               <option value="todos">Todos os Eventos ({crmCards.length})</option>
               {db.eventos.map(ev => (
@@ -509,13 +508,13 @@ export const CrmKanbanView: React.FC = () => {
             </select>
           </div>
 
-          <div className="lg:col-span-2 flex items-center gap-1.5">
-            <Calendar className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+          <div className="lg:col-span-2 flex items-center gap-1">
+            <Calendar className="w-3 h-3 text-neutral-400 shrink-0" />
             <select
               value={dataFiltro}
               onChange={(e) => setDataFiltro(e.target.value)}
               aria-label="Filtrar Kanban por Data do Agendamento"
-              className="w-full px-2.5 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+              className="w-full px-2 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500 truncate"
             >
               <option value="todas">Todas as Datas</option>
               {datasDisponiveis.map(dt => (
@@ -526,13 +525,13 @@ export const CrmKanbanView: React.FC = () => {
             </select>
           </div>
 
-          <div className="lg:col-span-2 flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+          <div className="lg:col-span-2 flex items-center gap-1">
+            <Clock className="w-3 h-3 text-neutral-400 shrink-0" />
             <select
               value={horarioFiltro}
               onChange={(e) => setHorarioFiltro(e.target.value)}
               aria-label="Filtrar Kanban por Horário da Agenda"
-              className="w-full px-2.5 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+              className="w-full px-2 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500 truncate"
             >
               <option value="todos">Todos os Horários</option>
               {horariosAgendaFiltro.map(slot => (
@@ -543,12 +542,12 @@ export const CrmKanbanView: React.FC = () => {
             </select>
           </div>
 
-          <div className="lg:col-span-1 flex items-center justify-end gap-1.5">
+          <div className="lg:col-span-1 flex items-center justify-end">
             <select
               value={responsavelFiltro}
               onChange={(e) => setResponsavelFiltro(e.target.value)}
               aria-label="Filtrar por Responsável"
-              className="w-full px-2 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500"
+              className="w-full px-1.5 py-1.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-800 dark:text-white focus:outline-none focus:border-orange-500 truncate"
             >
               <option value="todos">Resp.</option>
               {db.usuarios.map(u => (
@@ -560,18 +559,18 @@ export const CrmKanbanView: React.FC = () => {
           </div>
         </div>
 
-        {/* Faixa de Horários da Agenda para separar leads por horário marcado em 1 clique */}
+        {/* Linha 3: Horários da Agenda (Chips para separação em 1 clique) */}
         {horariosAgendaFiltro.length > 0 && (
-          <div className="pt-2.5 border-t border-neutral-200/80 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 mr-1 flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5 text-orange-500" />
-                Horários da Agenda:
+          <div className="pt-2 border-t border-neutral-200/80 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400 mr-1 flex items-center gap-1">
+                <Clock className="w-3 h-3 text-orange-500" />
+                Horários:
               </span>
               <button
                 type="button"
                 onClick={() => setHorarioFiltro('todos')}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                className={`px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors cursor-pointer ${
                   horarioFiltro === 'todos'
                     ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
                     : 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 border-neutral-200 dark:border-neutral-800 hover:border-orange-400'
@@ -590,7 +589,7 @@ export const CrmKanbanView: React.FC = () => {
                     key={slot.hora_inicio}
                     type="button"
                     onClick={() => setHorarioFiltro(isSelected ? 'todos' : slot.hora_inicio)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-semibold border transition-colors flex items-center gap-1.5 ${
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold border transition-colors flex items-center gap-1 cursor-pointer ${
                       isSelected
                         ? 'bg-orange-600 text-white border-orange-600 shadow-xs'
                         : slot.count > 0
@@ -599,7 +598,7 @@ export const CrmKanbanView: React.FC = () => {
                     }`}
                   >
                     <span>{slot.hora_inicio}</span>
-                    <span className={`px-1 rounded text-[10px] ${
+                    <span className={`px-1 rounded text-[9px] ${
                       isSelected
                         ? 'bg-white/20 text-white'
                         : 'bg-neutral-200/80 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300'
@@ -615,9 +614,9 @@ export const CrmKanbanView: React.FC = () => {
               <button
                 type="button"
                 onClick={handleLimparFiltros}
-                className="px-2.5 py-1 rounded-lg text-[11px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center gap-1 transition-colors"
+                className="px-2 py-0.5 rounded text-[10px] font-medium text-neutral-600 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 flex items-center gap-1 transition-colors cursor-pointer"
               >
-                <RotateCcw className="w-3 h-3" />
+                <RotateCcw className="w-2.5 h-2.5" />
                 <span>Limpar filtros</span>
               </button>
             )}
