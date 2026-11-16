@@ -37,8 +37,25 @@ export interface DriveFileEntry {
   url: string;
 }
 
+export interface SavedDriveProfile {
+  id: string;
+  label: string;
+  webappUrl: string;
+  apiToken?: string;
+  spreadsheetName?: string;
+  savedAt: number;
+}
+
 const DRIVE_CONFIG_KEY = 'AGENDA_ATIVA_DRIVE_CONFIG_V2';
 const LEGACY_GAS_URL_KEY = 'SISTEMA_AGENDAMENTO_GAS_WEBAPP_URL';
+const SAVED_DRIVES_KEY = 'AGENDA_ATIVA_SAVED_DRIVES_V1';
+const ACTIVE_DRIVE_PINNED_KEY = 'AGENDA_ATIVA_ACTIVE_DRIVE_URL_V1';
+
+function isCurrentPathPublic(): boolean {
+  if (typeof window === 'undefined') return false;
+  const p = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+  return p === '/agendar' || p.startsWith('/agendar/') || p === '/obrigado' || p.endsWith('/obrigado');
+}
 
 export function normalizeGasUrl(rawUrl: string): string {
   return (rawUrl || '')
@@ -116,6 +133,7 @@ if (typeof window !== 'undefined') {
 
 const listeners = new Set<(cfg: DriveConfig) => void>();
 const runtimeListeners = new Set<(rt: RuntimeConfig) => void>();
+const savedDrivesListeners = new Set<(drives: SavedDriveProfile[]) => void>();
 
 const initialGlobalUrl = (() => {
   const raw = (import.meta.env.VITE_GAS_WEBAPP_URL || GLOBAL_GAS_CONFIG.WEBAPP_URL || '').trim();
@@ -141,6 +159,64 @@ let runtimeConfigCache: RuntimeConfig = {
 };
 
 let hasUrlDriveOverride = false;
+let hasPinnedAdminDrive = false;
+
+function readSavedDrivesStorage(): SavedDriveProfile[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(SAVED_DRIVES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item.webappUrl === 'string' && validateGasUrlClient(item.webappUrl).valid);
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedDrivesStorage(drives: SavedDriveProfile[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SAVED_DRIVES_KEY, JSON.stringify(drives));
+  } catch {
+    // ignore
+  }
+}
+
+let savedDrivesCache: SavedDriveProfile[] = readSavedDrivesStorage();
+
+function hydratePinnedAdminDrive() {
+  if (typeof window === 'undefined' || hasUrlDriveOverride || isCurrentPathPublic()) return;
+  try {
+    const rawPinned = localStorage.getItem(ACTIVE_DRIVE_PINNED_KEY);
+    if (!rawPinned) return;
+    let pinnedUrl = '';
+    let pinnedToken = '';
+    try {
+      const parsed = JSON.parse(rawPinned);
+      pinnedUrl = (parsed?.webappUrl || '').trim();
+      pinnedToken = (parsed?.apiToken || '').trim();
+    } catch {
+      pinnedUrl = rawPinned.trim();
+    }
+    const check = pinnedUrl ? validateGasUrlClient(pinnedUrl) : { valid: false };
+    if (!check.valid) return;
+    const validUrl = check.normalizedUrl || pinnedUrl;
+    hasPinnedAdminDrive = true;
+    inMemoryDriveConfig = {
+      ...inMemoryDriveConfig,
+      webappUrl: validUrl,
+      apiToken: pinnedToken || inMemoryDriveConfig.apiToken,
+      syncStatus: 'synced'
+    };
+    runtimeConfigCache = {
+      ...runtimeConfigCache,
+      cloudConfigured: true
+    };
+  } catch {
+    // ignore
+  }
+}
 
 export function applyDriveOverrideFromLocation(search?: string): string | null {
   if (typeof window === 'undefined' && search === undefined) return null;
@@ -186,8 +262,141 @@ export function applyDriveOverrideFromLocation(search?: string): string | null {
   }
 }
 
-// Aplica imediatamente na inicialização caso o link público tenha ?d= ou ?gas=
+// Aplica imediatamente na inicialização: prioridade 1 = ?d= da URL pública; prioridade 2 = Drive fixado no painel admin
 applyDriveOverrideFromLocation();
+hydratePinnedAdminDrive();
+
+export function getSavedDrives(): SavedDriveProfile[] {
+  return [...savedDrivesCache];
+}
+
+export function subscribeSavedDrives(listener: (drives: SavedDriveProfile[]) => void): () => void {
+  savedDrivesListeners.add(listener);
+  return () => savedDrivesListeners.delete(listener);
+}
+
+export function saveAndPinDriveProfile(params: {
+  webappUrl: string;
+  apiToken?: string;
+  label?: string;
+  spreadsheetName?: string;
+}): SavedDriveProfile {
+  const check = validateGasUrlClient(params.webappUrl);
+  if (!check.valid) {
+    throw new Error(check.error || 'URL do Google Apps Script inválida.');
+  }
+  const normalizedUrl = check.normalizedUrl || normalizeGasUrl(params.webappUrl);
+  const deploymentId = extractGasDeploymentId(normalizedUrl);
+  const id = deploymentId || normalizedUrl;
+  const token = (params.apiToken || '').trim();
+
+  const existing = savedDrivesCache.find((d) => d.id === id || normalizeGasUrl(d.webappUrl) === normalizedUrl);
+  const shortSuffix = deploymentId ? deploymentId.slice(-6) : 'Drive';
+  const resolvedLabel =
+    (params.label || '').trim() ||
+    (params.spreadsheetName || '').trim() ||
+    existing?.label ||
+    `Drive ${shortSuffix}`;
+
+  const profile: SavedDriveProfile = {
+    id,
+    label: resolvedLabel,
+    webappUrl: normalizedUrl,
+    apiToken: token || undefined,
+    spreadsheetName: (params.spreadsheetName || '').trim() || existing?.spreadsheetName,
+    savedAt: Date.now()
+  };
+
+  const nextList = [profile, ...savedDrivesCache.filter((d) => d.id !== id && normalizeGasUrl(d.webappUrl) !== normalizedUrl)];
+  savedDrivesCache = nextList;
+  writeSavedDrivesStorage(nextList);
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(
+        ACTIVE_DRIVE_PINNED_KEY,
+        JSON.stringify({ webappUrl: normalizedUrl, apiToken: token })
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  hasPinnedAdminDrive = true;
+  saveDriveConfig(
+    {
+      webappUrl: normalizedUrl,
+      apiToken: token,
+      spreadsheetName: profile.spreadsheetName,
+      syncStatus: 'synced'
+    },
+    true
+  );
+
+  savedDrivesListeners.forEach((fn) => fn(getSavedDrives()));
+  return profile;
+}
+
+export function selectSavedDriveProfile(id: string): SavedDriveProfile | null {
+  const found = savedDrivesCache.find((d) => d.id === id);
+  if (!found) return null;
+
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(
+        ACTIVE_DRIVE_PINNED_KEY,
+        JSON.stringify({ webappUrl: found.webappUrl, apiToken: found.apiToken || '' })
+      );
+    } catch {
+      // ignore
+    }
+  }
+
+  hasPinnedAdminDrive = true;
+  saveDriveConfig(
+    {
+      webappUrl: found.webappUrl,
+      apiToken: found.apiToken || '',
+      spreadsheetName: found.spreadsheetName,
+      syncStatus: 'synced'
+    },
+    true
+  );
+  return found;
+}
+
+export function removeSavedDriveProfile(id: string): void {
+  const removed = savedDrivesCache.find((d) => d.id === id);
+  savedDrivesCache = savedDrivesCache.filter((d) => d.id !== id);
+  writeSavedDrivesStorage(savedDrivesCache);
+
+  if (removed && normalizeGasUrl(inMemoryDriveConfig.webappUrl) === normalizeGasUrl(removed.webappUrl)) {
+    const fallback = savedDrivesCache[0];
+    if (fallback) {
+      selectSavedDriveProfile(fallback.id);
+    } else {
+      clearPinnedDrive();
+    }
+  }
+
+  savedDrivesListeners.forEach((fn) => fn(getSavedDrives()));
+}
+
+export function clearPinnedDrive(): void {
+  hasPinnedAdminDrive = false;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem(ACTIVE_DRIVE_PINNED_KEY);
+    } catch {
+      // ignore
+    }
+  }
+  saveDriveConfig({
+    webappUrl: initialGlobalUrl,
+    apiToken: initialGlobalToken,
+    syncStatus: initialGlobalUrl ? 'synced' : 'offline'
+  });
+}
 
 export function buildPublicEventPath(slug?: string, explicitWebappUrl?: string): string {
   const basePath = slug ? `/agendar/${encodeURIComponent(slug)}` : '/agendar';
@@ -236,7 +445,11 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
         const effectiveToken = serverApiToken || initialGlobalToken;
 
         runtimeConfigCache = {
-          cloudConfigured: hasUrlDriveOverride || Boolean(json.cloudConfigured && validUrl) || Boolean(validUrl),
+          cloudConfigured:
+            hasUrlDriveOverride ||
+            hasPinnedAdminDrive ||
+            Boolean(json.cloudConfigured && validUrl) ||
+            Boolean(validUrl),
           engsegRequired:
             Boolean(json.engsegRequired) ||
             String(import.meta.env.VITE_ENGSEG_REQUIRED || '').toLowerCase() === 'true',
@@ -244,7 +457,7 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
           loaded: true
         };
 
-        if (!hasUrlDriveOverride && validUrl && !inMemoryDriveConfig.webappUrl) {
+        if (!hasUrlDriveOverride && !hasPinnedAdminDrive && validUrl && !inMemoryDriveConfig.webappUrl) {
           inMemoryDriveConfig = {
             ...inMemoryDriveConfig,
             webappUrl: validUrl,
@@ -269,6 +482,7 @@ export async function hydrateRuntimeConfig(): Promise<RuntimeConfig> {
 export function isCloudActive(): boolean {
   return Boolean(
     hasUrlDriveOverride ||
+      hasPinnedAdminDrive ||
       inMemoryDriveConfig.webappUrl.trim() ||
       initialGlobalUrl ||
       runtimeConfigCache.cloudConfigured

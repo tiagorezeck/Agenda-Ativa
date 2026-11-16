@@ -128,7 +128,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   const [nome, setNome] = useState('');
   const [whatsapp, setWhatsapp] = useState('');
   const [email, setEmail] = useState('');
-  const [empresa, setEmpresa] = useState('');
   const [localResposta, setLocalResposta] = useState('');
   const [localOutro, setLocalOutro] = useState('');
   const [respostasCustom, setRespostasCustom] = useState<Record<string, string>>({});
@@ -321,14 +320,14 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
 
     const temOpcoesLocal = Boolean(
-      eventoAtual.solicitar_local && Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0
+      Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0
     );
-    const valorLocalFinal = eventoAtual.solicitar_local
-      ? (temOpcoesLocal && localResposta === '__OUTRO__' ? localOutro.trim() : localResposta.trim())
-      : '';
+    const valorLocalFinal =
+      temOpcoesLocal && localResposta === '__OUTRO__' ? localOutro.trim() : localResposta.trim();
+    const localLabelDisplay = eventoAtual.label_local?.trim() || 'Local (Escola, Bairro, etc.)';
 
-    if (eventoAtual.solicitar_local && !valorLocalFinal) {
-      setErroMsg(`Por favor, responda: ${eventoAtual.label_local || 'Local / Campanha de Origem'}.`);
+    if (!valorLocalFinal) {
+      setErroMsg(`Por favor, informe: ${localLabelDisplay}.`);
       return;
     }
 
@@ -344,8 +343,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
         nome: nome.trim(),
         whatsapp: whatsapp.trim(),
         email: email.trim(),
-        empresa: empresa.trim(),
-        local: valorLocalFinal || undefined,
+        local: valorLocalFinal,
         respostas_customizadas: respostasCustom
       };
 
@@ -373,7 +371,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     setNome('');
     setWhatsapp('');
     setEmail('');
-    setEmpresa('');
     setLocalResposta('');
     setLocalOutro('');
     setRespostasCustom({});
@@ -1161,7 +1158,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                               <label className="block text-xs font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
-                                Nome Completo *
+                                Nome Completo <span className="text-rose-500">*</span>
                               </label>
                               <input
                                 type="text"
@@ -1175,7 +1172,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
 
                             <div>
                               <label className="block text-xs font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
-                                WhatsApp com DDD *
+                                WhatsApp com DDD <span className="text-rose-500">*</span>
                               </label>
                               <input
                                 type="tel"
@@ -1201,68 +1198,56 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                             </div>
 
                             <div>
-                              <label className="block text-xs font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
-                                Empresa (Opcional)
-                              </label>
-                              <input
-                                type="text"
-                                value={empresa}
-                                onChange={(e) => setEmpresa(e.target.value)}
-                                placeholder="Nome da sua empresa"
-                                className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                              />
+                              {(() => {
+                                const labelLocalCampo = eventoAtual.label_local?.trim() || 'Local (Escola, Bairro, etc.)';
+                                const temOpcoesLocal = Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0;
+                                return (
+                                  <>
+                                    <label className="block text-xs font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
+                                      {labelLocalCampo} <span className="text-rose-500">*</span>
+                                    </label>
+                                    {temOpcoesLocal ? (
+                                      <div className="space-y-2">
+                                        <select
+                                          required
+                                          value={localResposta}
+                                          onChange={(e) => setLocalResposta(e.target.value)}
+                                          className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                        >
+                                          <option value="">Selecione...</option>
+                                          {eventoAtual.local_opcoes!.map((op) => (
+                                            <option key={op} value={op}>
+                                              {op}
+                                            </option>
+                                          ))}
+                                          <option value="__OUTRO__">Outro (digitar)...</option>
+                                        </select>
+                                        {localResposta === '__OUTRO__' && (
+                                          <input
+                                            type="text"
+                                            required
+                                            value={localOutro}
+                                            onChange={(e) => setLocalOutro(e.target.value)}
+                                            placeholder={`Informe: ${labelLocalCampo}`}
+                                            className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                          />
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        required
+                                        value={localResposta}
+                                        onChange={(e) => setLocalResposta(e.target.value)}
+                                        placeholder={`Informe: ${labelLocalCampo}`}
+                                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                                      />
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                           </div>
-
-                          {/* Pergunta de Local / Campanha */}
-                          {eventoAtual.solicitar_local && (
-                            <div className="space-y-2 pt-1">
-                              <label className="flex items-center gap-1.5 text-xs font-semibold text-neutral-800 dark:text-neutral-200">
-                                <MapPin className="w-3.5 h-3.5 text-orange-500 shrink-0" />
-                                <span>{eventoAtual.label_local || 'De qual escola, bairro ou local você veio?'}</span>
-                                <span className="text-rose-500">*</span>
-                              </label>
-
-                              {Array.isArray(eventoAtual.local_opcoes) && eventoAtual.local_opcoes.length > 0 ? (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                  <select
-                                    required
-                                    value={localResposta}
-                                    onChange={(e) => setLocalResposta(e.target.value)}
-                                    className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                                  >
-                                    <option value="">Selecione uma opção...</option>
-                                    {eventoAtual.local_opcoes.map((op) => (
-                                      <option key={op} value={op}>
-                                        {op}
-                                      </option>
-                                    ))}
-                                    <option value="__OUTRO__">Outro local (digitar)...</option>
-                                  </select>
-
-                                  {localResposta === '__OUTRO__' && (
-                                    <input
-                                      type="text"
-                                      required
-                                      value={localOutro}
-                                      onChange={(e) => setLocalOutro(e.target.value)}
-                                      placeholder="Digite o nome do local..."
-                                      className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                                    />
-                                  )}
-                                </div>
-                              ) : (
-                                <input
-                                  type="text"
-                                  required
-                                  value={localResposta}
-                                  onChange={(e) => setLocalResposta(e.target.value)}
-                                  placeholder="Ex: Escola Estadual Centro, Bairro Jardins..."
-                                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-sm sm:text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                                />
-                              )}
-                            </div>
-                          )}
 
                           {/* Perguntas Dinâmicas */}
                           {camposDoEvento.length > 0 && (

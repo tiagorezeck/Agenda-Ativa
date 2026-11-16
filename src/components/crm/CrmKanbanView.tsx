@@ -362,10 +362,10 @@ export const CrmKanbanView: React.FC = () => {
                             </span>
                           </div>
 
-                          {/* Lead & Produto */}
+                          {/* Lead & Local / Produto */}
                           {lead && (
                             <p className="text-[11px] font-medium truncate text-orange-600 dark:text-orange-400">
-                              {lead.nome} {lead.empresa ? `· ${lead.empresa}` : ''}
+                              {lead.nome} {(lead.local || lead.empresa) ? `· ${lead.local || lead.empresa}` : ''}
                             </p>
                           )}
                           {card.produto_nome && (
@@ -470,7 +470,7 @@ export const CrmKanbanView: React.FC = () => {
                 >
                   {db.leads.filter(l => !l.excluido).map(l => (
                     <option key={l.id_lead} value={l.id_lead}>
-                      {l.nome} ({l.empresa || 'Sem empresa'})
+                      {l.nome} ({l.local || l.empresa || 'Sem local'})
                     </option>
                   ))}
                 </select>

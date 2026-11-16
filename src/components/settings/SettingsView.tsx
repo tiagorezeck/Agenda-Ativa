@@ -14,9 +14,16 @@ import {
   configureDriveApiSecret,
   validateGasUrlClient,
   normalizeGasUrl,
+  extractGasDeploymentId,
+  getSavedDrives,
+  subscribeSavedDrives,
+  saveAndPinDriveProfile,
+  selectSavedDriveProfile,
+  removeSavedDriveProfile,
   DriveConfig,
   RuntimeConfig,
-  DriveFileEntry
+  DriveFileEntry,
+  SavedDriveProfile
 } from '../../services/driveSyncService';
 import { compressImageFileToDataUrl } from '../../utils/imageCompressor';
 import {
@@ -51,7 +58,10 @@ import {
   Lock,
   Unlock,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  BookmarkCheck,
+  Plus,
+  Trash2
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -86,10 +96,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   // Motor DADOS DRIVE v2.0
   const [driveCfg, setDriveCfg] = useState<DriveConfig>(() => getDriveConfig());
   const [runtimeCfg, setRuntimeCfg] = useState<RuntimeConfig>(() => getRuntimeConfig());
+  const [savedDrives, setSavedDrives] = useState<SavedDriveProfile[]>(() => getSavedDrives());
   const [gasUrl, setGasUrl] = useState(driveCfg.webappUrl);
+  const [driveLabel, setDriveLabel] = useState(() => {
+    const match = getSavedDrives().find(
+      (d) => normalizeGasUrl(d.webappUrl) === normalizeGasUrl(driveCfg.webappUrl)
+    );
+    return match?.label || '';
+  });
   const [apiToken, setApiToken] = useState(driveCfg.apiToken || '');
 
   const [testandoConexao, setTestandoConexao] = useState(false);
+  const [salvandoDrive, setSalvandoDrive] = useState(false);
   const [syncBusy, setSyncBusy] = useState<'push' | 'pull' | 'secret' | 'checkpoint' | 'list' | 'restore' | null>(null);
   const [resultadoTeste, setResultadoTeste] = useState<{ success: boolean; message: string } | null>(null);
   const lastAutoConnectedUrlRef = useRef<string>(driveCfg.webappUrl || '');
@@ -108,9 +126,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   useEffect(() => {
     const unsubDrive = subscribeDriveConfig((cfg) => {
       setDriveCfg(cfg);
-      if (cfg.webappUrl && !gasUrl) {
-        setGasUrl(cfg.webappUrl);
-      }
+    });
+    const unsubSaved = subscribeSavedDrives((drives) => {
+      setSavedDrives(drives);
     });
     const unsubRuntime = subscribeRuntimeConfig((rt) => {
       setRuntimeCfg(rt);
@@ -131,6 +149,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     });
     return () => {
       unsubDrive();
+      unsubSaved();
       unsubRuntime();
       unsubEngseg();
       unsubStorage();
@@ -220,6 +239,130 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   };
 
   const handleTestarConexao = () => executarConexaoDrive();
+
+  const handleSalvarEPinarDrive = async () => {
+    const rawUrl = gasUrl.trim();
+    const check = validateGasUrlClient(rawUrl);
+    if (!check.valid) {
+      setResultadoTeste({
+        success: false,
+        message: check.error || 'Informe uma URL /exec válida do Google Apps Script antes de salvar.'
+      });
+      return;
+    }
+
+    const normalizedUrl = check.normalizedUrl || normalizeGasUrl(rawUrl);
+    setGasUrl(normalizedUrl);
+    lastAutoConnectedUrlRef.current = normalizedUrl;
+    setSalvandoDrive(true);
+    setResultadoTeste(null);
+
+    const res = await GasApiClient.testConnection(normalizedUrl, apiToken.trim() || undefined);
+    if (!res.success) {
+      setResultadoTeste(res);
+      setSalvandoDrive(false);
+      return;
+    }
+
+    try {
+      await storage.pullFromCloud(true);
+      const updatedDb = storage.getDatabase();
+      const nomeEmpresaSheet = updatedDb.config.find((c) => c.chave === 'EMPRESA_NOME')?.valor?.trim() || '';
+      const sheetName = typeof res.details?.spreadsheetName === 'string' ? res.details.spreadsheetName : undefined;
+      const savedProfile = saveAndPinDriveProfile({
+        webappUrl: normalizedUrl,
+        apiToken: apiToken.trim(),
+        label: driveLabel.trim() || nomeEmpresaSheet || sheetName || undefined,
+        spreadsheetName: sheetName || nomeEmpresaSheet || undefined
+      });
+      setDriveLabel(savedProfile.label);
+      setResultadoTeste({
+        success: true,
+        message: `URL salva e fixada (${savedProfile.label})! Ela permanecerá ativa mesmo após atualizar a página até você trocar manualmente. Carregados: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
+      });
+      onDataSynced?.();
+    } catch (pullErr: any) {
+      const sheetName = typeof res.details?.spreadsheetName === 'string' ? res.details.spreadsheetName : undefined;
+      const savedProfile = saveAndPinDriveProfile({
+        webappUrl: normalizedUrl,
+        apiToken: apiToken.trim(),
+        label: driveLabel.trim() || sheetName || undefined,
+        spreadsheetName: sheetName
+      });
+      setDriveLabel(savedProfile.label);
+      setResultadoTeste({
+        success: true,
+        message: `URL salva e fixada (${savedProfile.label}), mas houve aviso ao puxar dados: ${pullErr.message}`
+      });
+    } finally {
+      setSalvandoDrive(false);
+    }
+  };
+
+  const handleSelecionarDriveSalvo = async (driveId: string) => {
+    if (!driveId) return;
+    const selected = selectSavedDriveProfile(driveId);
+    if (!selected) return;
+
+    setGasUrl(selected.webappUrl);
+    setDriveLabel(selected.label);
+    setApiToken(selected.apiToken || '');
+    lastAutoConnectedUrlRef.current = selected.webappUrl;
+    setTestandoConexao(true);
+    setResultadoTeste(null);
+
+    try {
+      const res = await GasApiClient.testConnection(selected.webappUrl, selected.apiToken || undefined);
+      if (res.success) {
+        await storage.pullFromCloud(true);
+        const updatedDb = storage.getDatabase();
+        setResultadoTeste({
+          success: true,
+          message: `Drive alternado para "${selected.label}"! Carregados: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
+        });
+        onDataSynced?.();
+      } else {
+        setResultadoTeste(res);
+      }
+    } catch (err: any) {
+      setResultadoTeste({
+        success: false,
+        message: err?.message || `Falha ao carregar dados do Drive "${selected.label}".`
+      });
+    } finally {
+      setTestandoConexao(false);
+    }
+  };
+
+  const handlePrepararNovaUrl = () => {
+    setGasUrl('');
+    setDriveLabel('');
+    setApiToken('');
+    setResultadoTeste(null);
+    lastAutoConnectedUrlRef.current = '';
+  };
+
+  const handleRemoverDriveSalvo = (driveId: string) => {
+    removeSavedDriveProfile(driveId);
+    const remaining = getSavedDrives();
+    if (remaining.length > 0) {
+      const next = remaining[0];
+      setGasUrl(next.webappUrl);
+      setDriveLabel(next.label);
+      setApiToken(next.apiToken || '');
+      lastAutoConnectedUrlRef.current = next.webappUrl;
+      storage.pullFromCloud(true).then(() => onDataSynced?.()).catch(() => {});
+    } else {
+      setGasUrl('');
+      setDriveLabel('');
+      setApiToken('');
+      lastAutoConnectedUrlRef.current = '';
+    }
+    setResultadoTeste({
+      success: true,
+      message: 'URL removida da lista de Drives salvos.'
+    });
+  };
 
   // Reconhecimento automático ao colar/digitar uma URL /exec válida diferente da atual
   useEffect(() => {
@@ -768,23 +911,134 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
             <div className="space-y-3 text-xs">
               {runtimeCfg.cloudConfigured && (
                 <div className="p-2.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 rounded-lg text-[11px] text-emerald-800 dark:text-emerald-200">
-                  <strong>Produção Multi-Dispositivo Ativa:</strong> variável <code>GAS_WEBAPP_URL</code> detectada no servidor. Clientes na página pública conectam automaticamente sem expor sua URL ou secret.
+                  <strong>Conexão Ativa:</strong> Os dados carregam direto do Google Sheets. Clique em <strong>Salvar URL</strong> abaixo para manter esta URL fixa mesmo após atualizar a página.
+                </div>
+              )}
+
+              {/* Seletor em Lista Suspensa quando houver mais de 1 URL salva */}
+              {savedDrives.length > 1 && (
+                <div className="p-3 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="font-semibold text-neutral-800 dark:text-neutral-200">
+                      Alternar Drive Salvo ({savedDrives.length} URLs cadastradas)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handlePrepararNovaUrl}
+                      className="text-[11px] font-semibold text-orange-600 dark:text-orange-400 hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Adicionar Nova URL</span>
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={
+                        savedDrives.find(
+                          (d) => normalizeGasUrl(d.webappUrl) === normalizeGasUrl(driveCfg.webappUrl)
+                        )?.id || ''
+                      }
+                      onChange={(e) => handleSelecionarDriveSalvo(e.target.value)}
+                      className="flex-1 px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs font-medium text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                    >
+                      <option value="" disabled>
+                        Selecione um Drive salvo...
+                      </option>
+                      {savedDrives.map((d) => {
+                        const suffix = (extractGasDeploymentId(d.webappUrl) || d.id).slice(-6);
+                        return (
+                          <option key={d.id} value={d.id}>
+                            {d.label} (ID ...{suffix})
+                          </option>
+                        );
+                      })}
+                    </select>
+                    {(() => {
+                      const activeSaved = savedDrives.find(
+                        (d) => normalizeGasUrl(d.webappUrl) === normalizeGasUrl(driveCfg.webappUrl)
+                      );
+                      return activeSaved ? (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoverDriveSalvo(activeSaved.id)}
+                          title="Remover este Drive da lista salva"
+                          className="p-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 hover:border-rose-500 text-neutral-500 hover:text-rose-500 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Status quando há exatamente 1 URL salva */}
+              {savedDrives.length === 1 && (
+                <div className="p-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <div className="flex items-center gap-1.5 text-neutral-700 dark:text-neutral-300">
+                    <BookmarkCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>
+                      Drive fixado: <strong>{savedDrives[0].label}</strong>
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePrepararNovaUrl}
+                      className="text-orange-600 dark:text-orange-400 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Adicionar Outro Drive</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoverDriveSalvo(savedDrives[0].id)}
+                      className="text-neutral-400 hover:text-rose-500 transition-colors cursor-pointer"
+                      title="Remover URL salva"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               )}
 
               <div>
                 <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  URL da Implantação do Web App (Google Apps Script)
+                  Nome / Identificação do Drive (Opcional)
                 </label>
                 <input
-                  type="url"
-                  value={gasUrl}
-                  onChange={(e) => setGasUrl(e.target.value)}
-                  placeholder="https://script.google.com/macros/s/AKfycb.../exec"
-                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white font-mono text-xs focus:outline-none focus:border-orange-500"
+                  type="text"
+                  value={driveLabel}
+                  onChange={(e) => setDriveLabel(e.target.value)}
+                  placeholder="Ex: Escola People, Unidade Centro, Evento Principal..."
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white text-xs focus:outline-none focus:border-orange-500"
                 />
+              </div>
+
+              <div>
+                <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  URL da Implantação do Web App (Google Apps Script)
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="url"
+                    value={gasUrl}
+                    onChange={(e) => setGasUrl(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+                    className="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white font-mono text-xs focus:outline-none focus:border-orange-500"
+                  />
+                  <button
+                    type="button"
+                    disabled={salvandoDrive || !gasUrl.trim()}
+                    onClick={handleSalvarEPinarDrive}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                  >
+                    {salvandoDrive ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BookmarkCheck className="w-3.5 h-3.5" />}
+                    <span>{salvandoDrive ? 'Salvando...' : 'Salvar URL'}</span>
+                  </button>
+                </div>
                 <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1">
-                  Tráfego roteado pelo proxy backend <code>/api/drive-proxy</code> (anti-CORS e anti-iframe).
+                  Ao clicar em <strong>Salvar URL</strong>, ela fica fixada neste painel mesmo se você atualizar a página, e é adicionada na lista para troca rápida.
                 </p>
 
                 {gasUrl.includes('/library/') && (
@@ -806,7 +1060,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
                 {gasUrl.trim() && validateGasUrlClient(gasUrl).valid && (
                   <div className="mt-2 p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-900 dark:text-emerald-200 space-y-2">
                     <p>
-                      <strong>Modo Multi-Drive Automático Ativo:</strong> Ao colar qualquer URL válida aqui, o sistema conecta e carrega os dados da planilha automaticamente. Todos os links públicos e QR Codes gerados já saem vinculados a este Drive (<code>?d=...</code>), funcionando em qualquer celular ou navegador na Vercel sem precisar configurar variáveis.
+                      <strong>Modo Multi-Drive Automático Ativo:</strong> Todos os links públicos e QR Codes gerados saem vinculados automaticamente ao Drive selecionado (<code>?d=...</code>), funcionando em qualquer celular ou navegador na Vercel.
                     </p>
                     {!runtimeCfg.cloudConfigured && (
                       <button

@@ -314,7 +314,7 @@ export default function App() {
           )}
 
           {activeTab === 'configuracoes' && (
-            <SettingsView key={refreshCounter} onDataSynced={handleRefresh} />
+            <SettingsView onDataSynced={handleRefresh} />
           )}
         </main>
       </div>

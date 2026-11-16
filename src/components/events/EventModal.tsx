@@ -60,12 +60,9 @@ export const EventModal: React.FC<EventModalProps> = ({
   const parcelasNum = Math.max(1, Math.floor(Number(produtoParcelas) || 1));
   const valorTotalCalculado = Number((valorMensalNum * parcelasNum).toFixed(2));
 
-  // Pergunta de Local / Campanha (Escola, Bairro, Unidade...)
-  const [solicitarLocal, setSolicitarLocal] = useState<boolean>(
-    eventoParaEditar?.solicitar_local ?? false
-  );
+  // Campo obrigatório de Local / Direcionamento (Escola, Bairro, Unidade...) no formulário público
   const [labelLocal, setLabelLocal] = useState<string>(
-    eventoParaEditar?.label_local || 'De qual escola, bairro ou local você veio?'
+    eventoParaEditar?.label_local?.trim() || 'Bairro / Escola / Local'
   );
   const [localOpcoesText, setLocalOpcoesText] = useState<string>(
     Array.isArray(eventoParaEditar?.local_opcoes) ? eventoParaEditar!.local_opcoes!.join(', ') : ''
@@ -192,9 +189,9 @@ export const EventModal: React.FC<EventModalProps> = ({
       produto_parcelas: parcelasNum,
       produto_valor: valorTotalCalculado,
       exibir_produto_publico: exibirProdutoPublico,
-      solicitar_local: solicitarLocal,
-      label_local: solicitarLocal ? (labelLocal.trim() || 'Local / Campanha de Origem') : undefined,
-      local_opcoes: solicitarLocal ? localOpcoesArray : [],
+      solicitar_local: true,
+      label_local: labelLocal.trim() || 'Local (Escola, Bairro, etc.)',
+      local_opcoes: localOpcoesArray,
       modo_datas: modoDatas,
       recorrencia_ativa: isRecorrente,
       datas_especificas: isDatasEspecificas ? [...datasEspecificas].sort() : [],
@@ -539,90 +536,95 @@ export const EventModal: React.FC<EventModalProps> = ({
             </div>
           </div>
 
-          {/* Pergunta de Local / Campanha (Escola, Bairro, Unidade...) */}
+          {/* Campo Obrigatório de Local / Direcionamento (Substitui Empresa no formulário público) */}
           <div className="space-y-3 pt-4 border-t border-neutral-200 dark:border-neutral-800">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-orange-500" />
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                  Local / Campanha de Captação (Escola, Bairro, Unidade)
+                  Campo de Local / Direcionamento (Escola, Bairro, Unidade...)
                 </h4>
               </div>
+              <span className="text-[11px] font-semibold text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/50 px-2 py-0.5 rounded-md">
+                Sempre obrigatório no agendamento
+              </span>
             </div>
 
-            <label className="flex items-center gap-2.5 p-3 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs text-neutral-800 dark:text-neutral-200 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={solicitarLocal}
-                onChange={(e) => setSolicitarLocal(e.target.checked)}
-                className="rounded bg-white dark:bg-neutral-900 border-neutral-300 dark:border-neutral-700 text-orange-600 focus:ring-0"
-              />
+            <div className="p-4 bg-orange-50/50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/50 rounded-xl space-y-3">
+              <p className="text-[11px] text-neutral-600 dark:text-neutral-300 leading-relaxed">
+                O título definido abaixo aparece diretamente ao lado de E-mail (junto com Nome e WhatsApp) como campo obrigatório na página pública, e a resposta fica salva no cadastro do Lead.
+              </p>
+
               <div>
-                <span className="font-semibold">Gerar pergunta de Local no agendamento e salvar no cadastro do Lead</span>
-                <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-0.5">
-                  Ideal para campanhas em escolas, bairros ou pontos específicos. O que o participante responder entra no campo Local do Lead.
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                  <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+                    Nome do campo exibido ao participante *
+                  </label>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className="text-[10px] text-neutral-400">Atalhos:</span>
+                    <button
+                      type="button"
+                      onClick={() => setLabelLocal('Bairro')}
+                      className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] font-medium text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                    >
+                      Bairro
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLabelLocal('Escola')}
+                      className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] font-medium text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                    >
+                      Escola
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLabelLocal('Unidade')}
+                      className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] font-medium text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                    >
+                      Unidade
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLabelLocal('Cidade')}
+                      className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] font-medium text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                    >
+                      Cidade
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLabelLocal('Empresa')}
+                      className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] font-medium text-neutral-700 dark:text-neutral-300 cursor-pointer"
+                    >
+                      Empresa
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={labelLocal}
+                  onChange={(e) => setLabelLocal(e.target.value)}
+                  placeholder="Ex: Bairro, Escola, Unidade ou Local de Origem"
+                  className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  Opções pré-definidas (opcional — separe por vírgula)
+                </label>
+                <input
+                  type="text"
+                  value={localOpcoesText}
+                  onChange={(e) => setLocalOpcoesText(e.target.value)}
+                  placeholder="Ex: Centro, Jardins, Vila Nova (ou deixe vazio para o cliente digitar livremente)"
+                  className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                />
+                <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1">
+                  Se preencher opções, o participante escolhe na lista (com opção &quot;Outro&quot;). Se deixar vazio, o participante digita livremente.
                 </p>
               </div>
-            </label>
-
-            {solicitarLocal && (
-              <div className="p-4 bg-orange-50/50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/50 rounded-xl space-y-3">
-                <div>
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
-                    <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300">
-                      Pergunta exibida para o participante *
-                    </label>
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span className="text-[10px] text-neutral-400">Modelos:</span>
-                      <button
-                        type="button"
-                        onClick={() => setLabelLocal('De qual escola você é / estuda?')}
-                        className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] text-neutral-700 dark:text-neutral-300 cursor-pointer"
-                      >
-                        Escola
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setLabelLocal('Qual é o seu bairro?')}
-                        className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] text-neutral-700 dark:text-neutral-300 cursor-pointer"
-                      >
-                        Bairro
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setLabelLocal('Qual unidade / ponto de captação?')}
-                        className="px-2 py-0.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 hover:border-orange-500 rounded text-[10px] text-neutral-700 dark:text-neutral-300 cursor-pointer"
-                      >
-                        Unidade
-                      </button>
-                    </div>
-                  </div>
-                  <input
-                    type="text"
-                    value={labelLocal}
-                    onChange={(e) => setLabelLocal(e.target.value)}
-                    placeholder="Ex: Qual é o nome da escola? ou Qual seu bairro?"
-                    className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                    Opções pré-definidas (opcional — separe por vírgula)
-                  </label>
-                  <input
-                    type="text"
-                    value={localOpcoesText}
-                    onChange={(e) => setLocalOpcoesText(e.target.value)}
-                    placeholder="Ex: Escola Estadual Centro, Colégio Modelo, Bairro Jardins (deixe vazio para texto livre)"
-                    className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                  />
-                  <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1">
-                    Se preencher opções, o cliente escolhe na lista (com opção &quot;Outro&quot;). Se deixar vazio, o cliente digita livremente.
-                  </p>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
 
           {/* Período, Recorrência Semanal e Datas Distintas */}

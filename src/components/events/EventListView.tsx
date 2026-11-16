@@ -176,30 +176,26 @@ export const EventListView: React.FC<EventListViewProps> = ({
                     {ev.descricao || 'Sem descrição cadastrada.'}
                   </p>
 
-                  {/* Produto & Valor Atrelado + Local da Campanha */}
-                  {(ev.produto_nome || (ev.produto_valor && ev.produto_valor > 0) || ev.solicitar_local) && (
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
-                      {(ev.produto_nome || (ev.produto_valor && ev.produto_valor > 0)) && (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-300 font-medium">
-                          <Tag className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                          <span>{ev.produto_nome || 'Produto atrelado'}</span>
-                          {ev.produto_valor && ev.produto_valor > 0 ? (
-                            <strong className="font-mono ml-1">
-                              {ev.produto_parcelas && ev.produto_parcelas > 1 && ev.produto_valor_mensal && ev.produto_valor_mensal > 0
-                                ? `· ${ev.produto_parcelas}x de ${formatarMoedaBRL(ev.produto_valor_mensal)} (Total ${formatarMoedaBRL(ev.produto_valor)})`
-                                : `· ${formatarMoedaBRL(ev.produto_valor)}`}
-                            </strong>
-                          ) : null}
-                        </span>
-                      )}
-                      {ev.solicitar_local && (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 text-orange-800 dark:text-orange-300 font-medium">
-                          <MapPin className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
-                          <span>Local no formulário: {ev.label_local || 'Local / Campanha'}</span>
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  {/* Produto & Valor Atrelado + Campo Obrigatório de Local */}
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {(ev.produto_nome || (ev.produto_valor && ev.produto_valor > 0)) && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-800 dark:text-emerald-300 font-medium">
+                        <Tag className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                        <span>{ev.produto_nome || 'Produto atrelado'}</span>
+                        {ev.produto_valor && ev.produto_valor > 0 ? (
+                          <strong className="font-mono ml-1">
+                            {ev.produto_parcelas && ev.produto_parcelas > 1 && ev.produto_valor_mensal && ev.produto_valor_mensal > 0
+                              ? `· ${ev.produto_parcelas}x de ${formatarMoedaBRL(ev.produto_valor_mensal)} (Total ${formatarMoedaBRL(ev.produto_valor)})`
+                              : `· ${formatarMoedaBRL(ev.produto_valor)}`}
+                          </strong>
+                        ) : null}
+                      </span>
+                    )}
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 text-orange-800 dark:text-orange-300 font-medium">
+                      <MapPin className="w-3.5 h-3.5 text-orange-600 dark:text-orange-400" />
+                      <span>Campo obrigatório: {ev.label_local?.trim() || 'Local (Escola, Bairro, etc.)'}</span>
+                    </span>
+                  </div>
 
                   {/* Metadados */}
                   <div className="flex flex-wrap items-center gap-y-1 gap-x-2 text-xs text-neutral-500 dark:text-neutral-400">
