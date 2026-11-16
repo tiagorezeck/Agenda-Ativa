@@ -23,7 +23,9 @@ import {
   PauseCircle,
   ArrowRightLeft,
   Filter,
-  RotateCcw
+  RotateCcw,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 
 export type ColunaCrmId = 'ENTRADA' | 'REUNIAO' | 'FOLLOW_UP_STAND_BY' | 'GANHO' | 'PERDIDO' | 'CANCELADO';
@@ -54,6 +56,15 @@ export const CrmKanbanView: React.FC = () => {
   const [horarioFiltro, setHorarioFiltro] = useState('todos');
   const [responsavelFiltro, setResponsavelFiltro] = useState('todos');
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null);
+  const [expandedCardIds, setExpandedCardIds] = useState<Record<string, boolean>>({});
+
+  const toggleExpandCard = (idOportunidade: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedCardIds((prev) => ({
+      ...prev,
+      [idOportunidade]: !prev[idOportunidade]
+    }));
+  };
 
   // Modais
   const [cardEmEdicao, setCardEmEdicao] = useState<CrmOportunidadeEntity | null>(null);
@@ -669,13 +680,13 @@ export const CrmKanbanView: React.FC = () => {
                       const resp = usuariosById.get(card.responsavel_id);
                       const subStatus = getCardSubStatus(card);
                       const isFollowUpCol = coluna.id === 'FOLLOW_UP_STAND_BY';
+                      const isCardExpanded = Boolean(expandedCardIds[card.id_oportunidade]);
                       const agStatusInfo = agendamento ? formatStatusAgendamentoLabel(agendamento.status) : null;
 
-                      // Definição visual conforme instrução do usuário:
-                      // "mudando o card de cor, follow fica amarelo e stand fica cinza"
+                      // Cor amarela (Follow-up) / cinza (Stand By) aplicada somente na coluna correspondente
                       let cardStyle = 'bg-neutral-50 dark:bg-neutral-950 border-neutral-200 dark:border-neutral-800 text-neutral-900 dark:text-neutral-100';
 
-                      if (isFollowUpCol || card.sub_status) {
+                      if (isFollowUpCol) {
                         if (subStatus === 'FOLLOW') {
                           cardStyle = 'bg-amber-50 dark:bg-amber-950/40 border-amber-300 dark:border-amber-700/80 text-amber-950 dark:text-amber-100 shadow-amber-500/5 hover:border-amber-400 dark:hover:border-amber-600';
                         } else {
@@ -689,7 +700,7 @@ export const CrmKanbanView: React.FC = () => {
                           draggable
                           onDragStart={() => handleDragStart(card.id_oportunidade)}
                           onClick={() => setCardEmEdicao(card)}
-                          className={`p-2.5 border rounded-lg cursor-grab active:cursor-grabbing shadow-xs hover:shadow-md transition-all space-y-2 select-none ${cardStyle}`}
+                          className={`p-2.5 border rounded-lg cursor-grab active:cursor-grabbing shadow-xs hover:shadow-md transition-all space-y-1.5 select-none ${cardStyle}`}
                         >
                           {/* Título e ID */}
                           <div className="flex items-start justify-between gap-1.5">
@@ -708,109 +719,128 @@ export const CrmKanbanView: React.FC = () => {
                             </p>
                           )}
 
-                          {/* Evento (exibido quando visualizando todos os eventos) */}
-                          {evento && eventoFiltro === 'todos' && (
-                            <p className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 truncate">
-                              Evento: {evento.nome}
+                          {/* Evento + Seta de Expandir / Recolher informações */}
+                          <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                            <p className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 truncate flex-1">
+                              {evento ? `Evento: ${evento.nome}` : 'Detalhes do agendamento'}
                             </p>
-                          )}
-
-                          {/* Data e Hora do Agendamento para controle no CRM */}
-                          {agendamento ? (
-                            <div className="p-1.5 rounded-md bg-white/80 dark:bg-neutral-900/90 border border-neutral-200/90 dark:border-neutral-800 space-y-1">
-                              <div className="flex items-center justify-between gap-1 text-[10px] font-mono font-semibold text-neutral-800 dark:text-neutral-200">
-                                <span className="flex items-center gap-1 truncate">
-                                  <Calendar className="w-3 h-3 text-orange-500 shrink-0" />
-                                  <span>{formatarDataBR(agendamento.data_agendamento)}</span>
-                                </span>
-                                <span className="flex items-center gap-1 text-orange-600 dark:text-orange-400 shrink-0">
-                                  <Clock className="w-3 h-3 shrink-0" />
-                                  <span>
-                                    {agendamento.hora_inicio}
-                                    {agendamento.hora_fim && agendamento.hora_fim !== agendamento.hora_inicio
-                                      ? `–${agendamento.hora_fim}`
-                                      : ''}
-                                  </span>
-                                </span>
-                              </div>
-                              {agStatusInfo && (
-                                <div className="flex items-center justify-between gap-1">
-                                  <span className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold ${agStatusInfo.cls}`}>
-                                    {agStatusInfo.label}
-                                  </span>
-                                  <span className="text-[9px] font-mono opacity-60 truncate">
-                                    {agendamento.protocolo}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            card.data_proximo_followup && (
-                              <div className="flex items-center gap-1 text-[10px] opacity-70 font-mono">
-                                <Clock className="w-3 h-3 shrink-0" />
-                                <span className="truncate">Prev: {formatarDataBR(card.data_proximo_followup)}</span>
-                              </div>
-                            )
-                          )}
-
-                          {card.produto_nome && (
-                            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
-                              Produto: {card.produto_nome}
-                              {card.produto_parcelas && card.produto_parcelas > 1 && card.produto_valor_mensal
-                                ? ` · ${card.produto_parcelas}x ${formatarMoedaBRL(card.produto_valor_mensal)}`
-                                : ''}
-                            </p>
-                          )}
-
-                          {/* Valor e Responsável */}
-                          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-current/10 opacity-90">
-                            <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                              {formatarMoedaBRL(card.valor_fechado || card.valor_estimado)}
-                            </span>
-
-                            <span className="text-[10px] opacity-70 truncate max-w-[70px]">
-                              {resp?.nome ? resp.nome.split(' ')[0] : 'Admin'}
-                            </span>
-                          </div>
-
-                          {/* Data de Follow-up separada apenas se diferente do dia agendado */}
-                          {agendamento && card.data_proximo_followup && card.data_proximo_followup !== agendamento.data_agendamento && (
-                            <div className="flex items-center gap-1 text-[10px] opacity-70 font-mono">
-                              <Clock className="w-3 h-3 shrink-0" />
-                              <span className="truncate">Follow-up: {formatarDataBR(card.data_proximo_followup)}</span>
-                            </div>
-                          )}
-
-                          {/* Botão de Alternância Follow / Stand By (Destaque conforme solicitação do usuário) */}
-                          <div className="pt-1 border-t border-current/10 flex items-center justify-between gap-1">
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleFollowStand(card.id_oportunidade);
-                              }}
-                              title={`Status: ${subStatus === 'FOLLOW' ? 'Follow-up (Amarelo)' : 'Stand By (Cinza)'}. Clique para alternar.`}
-                              className={`w-full py-1 px-2 rounded text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer ${
-                                subStatus === 'FOLLOW'
-                                  ? 'bg-amber-200 hover:bg-amber-300 text-amber-950 dark:bg-amber-900/80 dark:hover:bg-amber-800 dark:text-amber-100 border border-amber-300 dark:border-amber-700'
-                                  : 'bg-neutral-200 hover:bg-neutral-300 text-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:text-neutral-200 border border-neutral-300 dark:border-neutral-600'
-                              }`}
+                              onClick={(e) => toggleExpandCard(card.id_oportunidade, e)}
+                              aria-label={isCardExpanded ? 'Recolher informações' : 'Expandir informações'}
+                              title={isCardExpanded ? 'Recolher informações' : 'Expandir informações'}
+                              className="p-0.5 rounded hover:bg-neutral-200/80 dark:hover:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors shrink-0 cursor-pointer"
                             >
-                              {subStatus === 'FOLLOW' ? (
-                                <>
-                                  <Zap className="w-3 h-3 text-amber-600 dark:text-amber-300 fill-amber-500/20" />
-                                  <span>Follow-up</span>
-                                  <ArrowRightLeft className="w-2.5 h-2.5 opacity-50 ml-0.5" />
-                                </>
+                              {isCardExpanded ? (
+                                <ChevronUp className="w-3.5 h-3.5" />
                               ) : (
-                                <>
-                                  <PauseCircle className="w-3 h-3 text-neutral-500 dark:text-neutral-400" />
-                                  <span>Stand By</span>
-                                  <ArrowRightLeft className="w-2.5 h-2.5 opacity-50 ml-0.5" />
-                                </>
+                                <ChevronDown className="w-3.5 h-3.5" />
                               )}
                             </button>
                           </div>
+
+                          {/* Bloco Expansível: Data/Hora do Agendamento, Produto, Valor e Responsável */}
+                          {isCardExpanded && (
+                            <div className="space-y-1.5 pt-1">
+                              {agendamento ? (
+                                <div className="p-1.5 rounded-md bg-white/80 dark:bg-neutral-900/90 border border-neutral-200/90 dark:border-neutral-800 space-y-1">
+                                  <div className="flex items-center justify-between gap-1 text-[10px] font-mono font-semibold text-neutral-800 dark:text-neutral-200">
+                                    <span className="flex items-center gap-1 truncate">
+                                      <Calendar className="w-3 h-3 text-orange-500 shrink-0" />
+                                      <span>{formatarDataBR(agendamento.data_agendamento)}</span>
+                                    </span>
+                                    <span className="flex items-center gap-1 text-orange-600 dark:text-orange-400 shrink-0">
+                                      <Clock className="w-3 h-3 shrink-0" />
+                                      <span>
+                                        {agendamento.hora_inicio}
+                                        {agendamento.hora_fim && agendamento.hora_fim !== agendamento.hora_inicio
+                                          ? `–${agendamento.hora_fim}`
+                                          : ''}
+                                      </span>
+                                    </span>
+                                  </div>
+                                  {agStatusInfo && (
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span className={`px-1.5 py-0.5 rounded border text-[9px] font-semibold ${agStatusInfo.cls}`}>
+                                        {agStatusInfo.label}
+                                      </span>
+                                      <span className="text-[9px] font-mono opacity-60 truncate">
+                                        {agendamento.protocolo}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                card.data_proximo_followup && (
+                                  <div className="flex items-center gap-1 text-[10px] opacity-70 font-mono">
+                                    <Clock className="w-3 h-3 shrink-0" />
+                                    <span className="truncate">Prev: {formatarDataBR(card.data_proximo_followup)}</span>
+                                  </div>
+                                )
+                              )}
+
+                              {card.produto_nome && (
+                                <p className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">
+                                  Produto: {card.produto_nome}
+                                  {card.produto_parcelas && card.produto_parcelas > 1 && card.produto_valor_mensal
+                                    ? ` · ${card.produto_parcelas}x ${formatarMoedaBRL(card.produto_valor_mensal)}`
+                                    : ''}
+                                </p>
+                              )}
+
+                              {/* Valor e Responsável */}
+                              <div className="flex items-center justify-between text-[11px] pt-1 border-t border-current/10 opacity-90">
+                                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                                  {formatarMoedaBRL(card.valor_fechado || card.valor_estimado)}
+                                </span>
+
+                                <span className="text-[10px] opacity-70 truncate max-w-[70px]">
+                                  {resp?.nome ? resp.nome.split(' ')[0] : 'Admin'}
+                                </span>
+                              </div>
+
+                              {/* Data de Follow-up separada apenas se diferente do dia agendado */}
+                              {agendamento && card.data_proximo_followup && card.data_proximo_followup !== agendamento.data_agendamento && (
+                                <div className="flex items-center gap-1 text-[10px] opacity-70 font-mono">
+                                  <Clock className="w-3 h-3 shrink-0" />
+                                  <span className="truncate">Follow-up: {formatarDataBR(card.data_proximo_followup)}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Botão de Alternância Follow / Stand By apenas na coluna correspondente */}
+                          {isFollowUpCol && (
+                            <div className="pt-1 border-t border-current/10 flex items-center justify-between gap-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleFollowStand(card.id_oportunidade);
+                                }}
+                                title={`Status: ${subStatus === 'FOLLOW' ? 'Follow-up (Amarelo)' : 'Stand By (Cinza)'}. Clique para alternar.`}
+                                className={`w-full py-1 px-2 rounded text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer ${
+                                  subStatus === 'FOLLOW'
+                                    ? 'bg-amber-200 hover:bg-amber-300 text-amber-950 dark:bg-amber-900/80 dark:hover:bg-amber-800 dark:text-amber-100 border border-amber-300 dark:border-amber-700'
+                                    : 'bg-neutral-200 hover:bg-neutral-300 text-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 dark:text-neutral-200 border border-neutral-300 dark:border-neutral-600'
+                                }`}
+                              >
+                                {subStatus === 'FOLLOW' ? (
+                                  <>
+                                    <Zap className="w-3 h-3 text-amber-600 dark:text-amber-300 fill-amber-500/20" />
+                                    <span>Follow-up</span>
+                                    <ArrowRightLeft className="w-2.5 h-2.5 opacity-50 ml-0.5" />
+                                  </>
+                                ) : (
+                                  <>
+                                    <PauseCircle className="w-3 h-3 text-neutral-500 dark:text-neutral-400" />
+                                    <span>Stand By</span>
+                                    <ArrowRightLeft className="w-2.5 h-2.5 opacity-50 ml-0.5" />
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
                         </div>
                       );
                     })
@@ -1125,7 +1155,8 @@ export const CrmKanbanView: React.FC = () => {
                 </div>
               )}
 
-              {/* Botão de Toggle Follow / Stand dentro do Modal também */}
+              {/* Botão de Toggle Follow / Stand dentro do Modal (apenas para coluna Follow-up / Stand By) */}
+              {isCardInColumn(cardEmEdicao, 'FOLLOW_UP_STAND_BY') && (
               <div className="p-3 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl flex items-center justify-between">
                 <div>
                   <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Modo da Oportunidade:</span>
@@ -1157,6 +1188,7 @@ export const CrmKanbanView: React.FC = () => {
                   )}
                 </button>
               </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs">
                 <div>
