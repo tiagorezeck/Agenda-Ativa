@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { storage } from '../../services/storageService';
+import { getLoggedInUser, podeAcessarTodoCrm } from '../../services/authService';
 import {
   AgendamentoEntity,
   CrmOportunidadeEntity,
@@ -49,6 +50,15 @@ const COLUNAS_CRM: ColunaDef[] = [
 export const CrmKanbanView: React.FC = () => {
   const db = storage.getDatabase();
   const crmCards = db.crm;
+  const [currentUser, setCurrentUser] = useState<UsuarioEntity>(() => getLoggedInUser());
+
+  useEffect(() => {
+    const handleAuth = () => setCurrentUser(getLoggedInUser());
+    window.addEventListener('auth_user_changed', handleAuth);
+    return () => window.removeEventListener('auth_user_changed', handleAuth);
+  }, []);
+
+  const canAccessAllCrm = podeAcessarTodoCrm(currentUser);
 
   const [busca, setBusca] = useState('');
   const [eventoFiltro, setEventoFiltro] = useState('todos');
@@ -194,6 +204,13 @@ export const CrmKanbanView: React.FC = () => {
     return crmCards.filter((card) => {
       if (responsavelFiltro !== 'todos' && card.responsavel_id !== responsavelFiltro) return false;
       const { lead, agendamento, evento } = getCardContext(card);
+      if (!canAccessAllCrm) {
+        const isOwner =
+          card.responsavel_id === currentUser.id_usuario ||
+          evento?.responsavel_id === currentUser.id_usuario ||
+          lead?.responsavel_id === currentUser.id_usuario;
+        if (!isOwner) return false;
+      }
       if (eventoFiltro !== 'todos' && evento?.id_evento !== eventoFiltro) return false;
       if (!termo) return true;
       return (
@@ -207,7 +224,7 @@ export const CrmKanbanView: React.FC = () => {
         (evento && evento.nome.toLowerCase().includes(termo))
       );
     });
-  }, [crmCards, busca, responsavelFiltro, eventoFiltro, agendamentosById, eventosById, leadsById, db.eventos]);
+  }, [crmCards, busca, responsavelFiltro, eventoFiltro, agendamentosById, eventosById, leadsById, db.eventos, canAccessAllCrm, currentUser.id_usuario]);
 
   // Datas disponíveis nos cards do filtro atual
   const datasDisponiveis = useMemo(() => {

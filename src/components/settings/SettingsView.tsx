@@ -68,33 +68,56 @@ import {
   BookmarkCheck,
   Plus,
   Trash2,
-  ExternalLink
+  ExternalLink,
+  Mail,
+  Phone,
+  MapPin
 } from 'lucide-react';
+import {
+  getLoggedInUser,
+  podeAcessarConfigBanco,
+  podeAcessarConfigEngseg
+} from '../../services/authService';
+
+export type SettingsSection = 'empresa' | 'banco' | 'engseg';
 
 interface SettingsViewProps {
+  section: SettingsSection;
   onDataSynced?: () => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ section, onDataSynced }) => {
   const db = storage.getDatabase();
+  const [currentUser, setCurrentUser] = useState(() => getLoggedInUser());
+
+  useEffect(() => {
+    const handleAuth = () => setCurrentUser(getLoggedInUser());
+    window.addEventListener('auth_user_changed', handleAuth);
+    return () => {
+      window.removeEventListener('auth_user_changed', handleAuth);
+    };
+  }, []);
+
+  const canAccessBanco = podeAcessarConfigBanco(currentUser);
+  const canAccessEngseg = podeAcessarConfigEngseg(currentUser);
 
   const [empresaNome, setEmpresaNome] = useState(
-    db.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || 'Instituto Comet Atendimentos'
+    db.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || 'Agenda Ativa'
   );
   const [empresaLogo, setEmpresaLogo] = useState(
     db.config.find(c => c.chave === 'EMPRESA_LOGO')?.valor || ''
   );
   const [whatsappContato, setWhatsappContato] = useState(() =>
-    aplicarMascaraTelefoneBR(db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '5511999998888')
+    aplicarMascaraTelefoneBR(db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '')
   );
   const [empresaEmail, setEmpresaEmail] = useState(
-    db.config.find(c => c.chave === 'EMPRESA_EMAIL')?.valor || 'contato@institutocomet.com.br'
+    db.config.find(c => c.chave === 'EMPRESA_EMAIL')?.valor || ''
   );
   const [empresaEndereco, setEmpresaEndereco] = useState(
-    db.config.find(c => c.chave === 'EMPRESA_ENDERECO')?.valor || 'Av. Paulista, 1000 - Bela Vista, São Paulo - SP'
+    db.config.find(c => c.chave === 'EMPRESA_ENDERECO')?.valor || ''
   );
   const [empresaCnpj, setEmpresaCnpj] = useState(
-    db.config.find(c => c.chave === 'EMPRESA_CNPJ')?.valor || '42.123.456/0001-89'
+    db.config.find(c => c.chave === 'EMPRESA_CNPJ')?.valor || ''
   );
   const [termosLgpd, setTermosLgpd] = useState(
     db.config.find(c => c.chave === 'TERMOS_LGPD')?.valor || ''
@@ -126,6 +149,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
   const [empresaErroMsg, setEmpresaErroMsg] = useState<string | null>(null);
   const [engsegErroMsg, setEngsegErroMsg] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmResetZero, setConfirmResetZero] = useState(false);
+  const [resettingZero, setResettingZero] = useState(false);
 
   // Módulo ENGSEG 2FA
   const [engsegCfg, setEngsegCfg] = useState<EngsegConfig>(() => getEngsegConfig());
@@ -244,17 +269,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
 
     if (res.success) {
       try {
-        await storage.pullFromCloud(true);
-        const updatedDb = storage.getDatabase();
-        setResultadoTeste({
-          success: true,
-          message: `${res.message} Drive conectado automaticamente! Base carregada: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
-        });
+        const isBrandNewDrive = res.details?.hasDatabase === false;
+        if (isBrandNewDrive) {
+          storage.resetSystemToZero(true);
+          await storage.pushToCloud();
+          setResultadoTeste({
+            success: true,
+            message: `${res.message} Novo Drive conectado e inicializado do zero (sem nenhum dado · apenas login "admin" e senha "admin").`
+          });
+        } else {
+          await storage.pullFromCloud(true);
+          const updatedDb = storage.getDatabase();
+          setResultadoTeste({
+            success: true,
+            message: `${res.message} Drive conectado automaticamente! Base carregada: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
+          });
+        }
         onDataSynced?.();
       } catch (pullErr: any) {
         setResultadoTeste({
           success: true,
-          message: `${res.message} (Aviso ao puxar dados: ${pullErr.message})`
+          message: `${res.message} (Aviso ao inicializar/puxar dados: ${pullErr.message})`
         });
       }
     } else {
@@ -289,25 +324,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       return;
     }
 
+    const isBrandNewDrive = res.details?.hasDatabase === false;
+    const sheetName = typeof res.details?.spreadsheetName === 'string' ? res.details.spreadsheetName : undefined;
+
     try {
-      await storage.pullFromCloud(true);
-      const updatedDb = storage.getDatabase();
-      const nomeEmpresaSheet = updatedDb.config.find((c) => c.chave === 'EMPRESA_NOME')?.valor?.trim() || '';
-      const sheetName = typeof res.details?.spreadsheetName === 'string' ? res.details.spreadsheetName : undefined;
-      const savedProfile = saveAndPinDriveProfile({
-        webappUrl: normalizedUrl,
-        apiToken: apiToken.trim(),
-        label: driveLabel.trim() || nomeEmpresaSheet || sheetName || undefined,
-        spreadsheetName: sheetName || nomeEmpresaSheet || undefined
-      });
-      setDriveLabel(savedProfile.label);
-      setResultadoTeste({
-        success: true,
-        message: `URL salva e fixada (${savedProfile.label})! Ela permanecerá ativa mesmo após atualizar a página até você trocar manualmente. Carregados: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
-      });
+      if (isBrandNewDrive) {
+        storage.resetSystemToZero(true);
+        const savedProfile = saveAndPinDriveProfile({
+          webappUrl: normalizedUrl,
+          apiToken: apiToken.trim(),
+          label: driveLabel.trim() || sheetName || undefined,
+          spreadsheetName: sheetName || undefined
+        });
+        await storage.pushToCloud();
+        setDriveLabel(savedProfile.label);
+        setResultadoTeste({
+          success: true,
+          message: `Novo Drive salvo e fixado (${savedProfile.label})! Inicializado do zero sem dados falsos (apenas login "admin" e senha "admin").`
+        });
+      } else {
+        await storage.pullFromCloud(true);
+        const updatedDb = storage.getDatabase();
+        const nomeEmpresaSheet = updatedDb.config.find((c) => c.chave === 'EMPRESA_NOME')?.valor?.trim() || '';
+        const savedProfile = saveAndPinDriveProfile({
+          webappUrl: normalizedUrl,
+          apiToken: apiToken.trim(),
+          label: driveLabel.trim() || nomeEmpresaSheet || sheetName || undefined,
+          spreadsheetName: sheetName || nomeEmpresaSheet || undefined
+        });
+        setDriveLabel(savedProfile.label);
+        setResultadoTeste({
+          success: true,
+          message: `URL salva e fixada (${savedProfile.label})! Ela permanecerá ativa mesmo após atualizar a página até você trocar manualmente. Carregados: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
+        });
+      }
       onDataSynced?.();
     } catch (pullErr: any) {
-      const sheetName = typeof res.details?.spreadsheetName === 'string' ? res.details.spreadsheetName : undefined;
       const savedProfile = saveAndPinDriveProfile({
         webappUrl: normalizedUrl,
         apiToken: apiToken.trim(),
@@ -317,7 +369,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
       setDriveLabel(savedProfile.label);
       setResultadoTeste({
         success: true,
-        message: `URL salva e fixada (${savedProfile.label}), mas houve aviso ao puxar dados: ${pullErr.message}`
+        message: `URL salva e fixada (${savedProfile.label}), mas houve aviso ao sincronizar dados: ${pullErr.message}`
       });
     } finally {
       setSalvandoDrive(false);
@@ -339,12 +391,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     try {
       const res = await GasApiClient.testConnection(selected.webappUrl, selected.apiToken || undefined);
       if (res.success) {
-        await storage.pullFromCloud(true);
-        const updatedDb = storage.getDatabase();
-        setResultadoTeste({
-          success: true,
-          message: `Drive alternado para "${selected.label}"! Carregados: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
-        });
+        if (res.details?.hasDatabase === false) {
+          storage.resetSystemToZero(true);
+          await storage.pushToCloud();
+          setResultadoTeste({
+            success: true,
+            message: `Novo Drive "${selected.label}" inicializado do zero (sem dados · apenas login "admin" / senha "admin").`
+          });
+        } else {
+          await storage.pullFromCloud(true);
+          const updatedDb = storage.getDatabase();
+          setResultadoTeste({
+            success: true,
+            message: `Drive alternado para "${selected.label}"! Carregados: ${updatedDb.eventos.length} evento(s), ${updatedDb.leads.length} lead(s) e ${updatedDb.agendamentos.length} agendamento(s).`
+          });
+        }
         onDataSynced?.();
       } else {
         setResultadoTeste(res);
@@ -576,6 +637,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     onDataSynced?.();
   };
 
+  const handleResetarSistemaZero = async () => {
+    setResettingZero(true);
+    try {
+      await storage.resetSystemAndSyncCloud();
+      setConfirmResetZero(false);
+      setResultadoTeste({
+        success: true,
+        message: 'Sistema resetado com sucesso! Todos os dados falsos foram excluídos. Apenas login "admin" / senha "admin" mantido.'
+      });
+      onDataSynced?.();
+    } catch (err: any) {
+      setResultadoTeste({
+        success: false,
+        message: err?.message || 'Sistema zerado localmente, mas houve erro ao limpar a nuvem.'
+      });
+    } finally {
+      setResettingZero(false);
+    }
+  };
+
   const handleToggleEngsegSingleButton = () => {
     setEngsegErroMsg(null);
     const cleanEmail = engsegCfg.email.trim();
@@ -595,54 +676,122 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
     offline: { label: 'Modo Local', cls: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 border-neutral-200 dark:border-neutral-700' }
   }[driveCfg.syncStatus || 'offline'];
 
+  const sectionHeader = {
+    empresa: {
+      title: 'Dados da Empresa & Atendimento',
+      desc: 'Identidade institucional, logotipo exibido na página pública de agendamento, canais de contato e texto LGPD.',
+      icon: Building
+    },
+    banco: {
+      title: 'Banco de Dados — Motor DADOS DRIVE v2.0',
+      desc: 'Conexão multi-drive com Google Apps Script, espelhamento em 13 abas no Google Sheets, checkpoints e sincronização.',
+      icon: Database
+    },
+    engseg: {
+      title: 'Engseg — Segurança 2FA por E-mail',
+      desc: 'Proteja o painel administrativo do Agenda Ativa com código OTP de 6 dígitos enviado por e-mail via Apps Script.',
+      icon: ShieldCheck
+    }
+  }[section];
+
+  const SectionIcon = sectionHeader.icon;
+
   return (
     <div className="space-y-6">
-      {/* Top Banner */}
+      {/* Top Banner Contextual da Página */}
       <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm transition-colors">
-        <div>
-          <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
-            Configurações — Agenda Ativa
-          </h2>
-          <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-xl">
-            Gerencie os dados da empresa, o Motor Universal <strong>DADOS DRIVE v2.0</strong> (Drive + Sheets Batch + Proxy) e o módulo <strong>ENGSEG 2FA</strong>.
-          </p>
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-500 shrink-0">
+            <SectionIcon className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
+              {sectionHeader.title}
+            </h2>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 max-w-2xl">
+              {sectionHeader.desc}
+            </p>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          {!confirmReset ? (
-            <button
-              type="button"
-              onClick={() => setConfirmReset(true)}
-              className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-950 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-300 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-orange-500" />
-              <span>Restaurar Cenário de Aceitação</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 rounded-xl px-3 py-1.5 text-xs">
-              <span className="font-medium text-amber-900 dark:text-amber-200">Confirmar restauração?</span>
+        {section === 'banco' && canAccessBanco && (
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {!confirmResetZero ? (
               <button
                 type="button"
-                onClick={handleResetarCenarioAceitacao}
-                className="px-2.5 py-1 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-semibold cursor-pointer"
+                onClick={() => {
+                  setConfirmResetZero(true);
+                  setConfirmReset(false);
+                }}
+                className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-sm shadow-rose-600/20 transition-colors flex items-center gap-1.5 cursor-pointer"
               >
-                Sim
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Resetar Sistema</span>
               </button>
+            ) : (
+              <div className="flex items-center gap-2 bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 rounded-xl px-3 py-1.5 text-xs">
+                <span className="font-semibold text-rose-900 dark:text-rose-200">
+                  Zerar tudo e manter só admin/admin?
+                </span>
+                <button
+                  type="button"
+                  disabled={resettingZero}
+                  onClick={handleResetarSistemaZero}
+                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white rounded-lg font-bold cursor-pointer inline-flex items-center gap-1"
+                >
+                  {resettingZero && <Loader2 className="w-3 h-3 animate-spin" />}
+                  <span>Confirmar Reset</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={resettingZero}
+                  onClick={() => setConfirmResetZero(false)}
+                  className="px-2 py-1 bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
+            {!confirmReset ? (
               <button
                 type="button"
-                onClick={() => setConfirmReset(false)}
-                className="px-2 py-1 bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium cursor-pointer"
+                onClick={() => {
+                  setConfirmReset(true);
+                  setConfirmResetZero(false);
+                }}
+                className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-950 dark:hover:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-300 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
-                Cancelar
+                <RotateCcw className="w-3.5 h-3.5 text-orange-500" />
+                <span>Carregar Dados Demo</span>
               </button>
-            </div>
-          )}
-        </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 rounded-xl px-3 py-1.5 text-xs">
+                <span className="font-medium text-amber-900 dark:text-amber-200">Carregar demo?</span>
+                <button
+                  type="button"
+                  onClick={handleResetarCenarioAceitacao}
+                  className="px-2.5 py-1 bg-orange-600 hover:bg-orange-500 text-white rounded-lg font-semibold cursor-pointer"
+                >
+                  Sim
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmReset(false)}
+                  className="px-2 py-1 bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Coluna Esquerda: Dados da Empresa + Módulo ENGSEG 2FA */}
-        <div className="space-y-6">
+      {/* PÁGINA 1: DADOS DA EMPRESA */}
+      {section === 'empresa' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
           {/* Formulário de Dados da Empresa */}
           <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-4 shadow-sm transition-colors">
             <div className="flex items-center gap-2">
@@ -832,106 +981,189 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
               </div>
             </form>
           </div>
+          </div>
 
-          {/* Módulo ENGSEG — 2FA por E-mail com Botão Único */}
-          <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-4 shadow-sm transition-colors">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-orange-500" />
-                <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
-                  Módulo ENGSEG — Segurança 2FA por E-mail
-                </h3>
-              </div>
-
-              <span
-                className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
-                  engsegCfg.enabled
-                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                    : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700'
-                }`}
-              >
-                {engsegCfg.enabled ? '2FA Ativo' : '2FA Desativado'}
-              </span>
-            </div>
-
-            <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
-              Protege o painel administrativo do <strong>Agenda Ativa</strong> com código OTP de 6 dígitos enviado por e-mail via Apps Script (ou código de teste local quando offline). A página pública de agendamento continua livre para clientes.
-            </p>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                  E-mail Autorizado para Receber Códigos 2FA
-                </label>
-                <input
-                  type="email"
-                  inputMode="email"
-                  pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
-                  title="Informe um e-mail válido contendo @"
-                  value={engsegCfg.email}
-                  onChange={(e) => {
-                    setEngsegErroMsg(null);
-                    saveEngsegConfig({ email: sanitizarEmailInput(e.target.value) });
-                  }}
-                  placeholder="admin@empresa.com.br"
-                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white text-xs focus:outline-none focus:border-orange-500"
-                />
-                {engsegErroMsg && (
-                  <p className="text-[11px] text-rose-600 dark:text-rose-400 font-medium mt-1">
-                    {engsegErroMsg}
-                  </p>
-                )}
-              </div>
-
-              {/* Botão Único de Ativação / Desativação para Testes */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  disabled={engsegCfg.enforcedByServer}
-                  onClick={handleToggleEngsegSingleButton}
-                  className={`flex-1 min-w-[210px] px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 ${
-                    engsegCfg.enforcedByServer
-                      ? 'bg-emerald-600/80 text-white cursor-not-allowed'
-                      : engsegCfg.enabled
-                      ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm cursor-pointer'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm cursor-pointer'
-                  }`}
-                >
-                  {engsegCfg.enforcedByServer ? (
-                    <>
-                      <Lock className="w-4 h-4" />
-                      <span>2FA Obrigatório via Servidor (ENGSEG_REQUIRED=true)</span>
-                    </>
-                  ) : engsegCfg.enabled ? (
-                    <>
-                      <Unlock className="w-4 h-4" />
-                      <span>Desativar 2FA (Botão Único de Teste)</span>
-                    </>
+          {/* Card Lateral: Pré-visualização Institucional */}
+          <div className="space-y-4">
+            <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-4 shadow-sm">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-neutral-400">
+                Pré-visualização na Página Pública
+              </h3>
+              <div className="p-4 rounded-xl bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 space-y-3">
+                <div className="flex items-center gap-3">
+                  {empresaLogo ? (
+                    <img
+                      src={empresaLogo}
+                      alt={empresaNome}
+                      className="w-12 h-12 rounded-xl object-cover border border-neutral-200 dark:border-neutral-700 bg-white"
+                    />
                   ) : (
-                    <>
-                      <Lock className="w-4 h-4" />
-                      <span>Ativar 2FA Agora (Botão Único de Teste)</span>
-                    </>
+                    <div className="w-12 h-12 rounded-xl bg-orange-500/15 text-orange-600 flex items-center justify-center font-bold text-base">
+                      {(empresaNome || 'A').charAt(0)}
+                    </div>
                   )}
-                </button>
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-neutral-900 dark:text-white truncate">
+                      {empresaNome || 'Nome da Empresa'}
+                    </p>
+                    {empresaCnpj && (
+                      <p className="text-[11px] font-mono text-neutral-500 truncate">CNPJ: {empresaCnpj}</p>
+                    )}
+                  </div>
+                </div>
 
-                {engsegCfg.enabled && engsegVerified && (
-                  <button
-                    type="button"
-                    onClick={() => clearEngsegSession()}
-                    className="px-3.5 py-2.5 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <KeyRound className="w-3.5 h-3.5 text-orange-500" />
-                    <span>Bloquear Agora</span>
-                  </button>
-                )}
+                <div className="space-y-1.5 text-[11px] text-neutral-600 dark:text-neutral-400 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+                  {whatsappContato && (
+                    <div className="flex items-center gap-2">
+                      <Phone className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                      <span className="font-mono">{whatsappContato}</span>
+                    </div>
+                  )}
+                  {empresaEmail && (
+                    <div className="flex items-center gap-2 truncate">
+                      <Mail className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                      <span className="truncate">{empresaEmail}</span>
+                    </div>
+                  )}
+                  {empresaEndereco && (
+                    <div className="flex items-start gap-2">
+                      <MapPin className="w-3.5 h-3.5 text-orange-500 shrink-0 mt-0.5" />
+                      <span>{empresaEndereco}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         </div>
+      )}
 
-        {/* Coluna Direita: Motor DADOS DRIVE v2.0 */}
-        <div className="space-y-6">
+      {/* PÁGINA 2: ENGSEG 2FA */}
+      {section === 'engseg' && (
+        <div className="max-w-3xl">
+          {!canAccessEngseg ? (
+            <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3 shadow-sm">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <Lock className="w-4 h-4" />
+                <h3 className="text-sm font-semibold">Segurança ENGSEG (Acesso Restrito)</h3>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
+                Seu perfil atual (<strong>{currentUser.perfil}</strong>) não possui permissão para alterar a configuração de 2FA ENGSEG. Solicite liberação ao Administrador.
+              </p>
+            </div>
+          ) : (
+            <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-4 shadow-sm transition-colors">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-orange-500" />
+                  <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
+                    Módulo ENGSEG — Segurança 2FA por E-mail
+                  </h3>
+                </div>
+
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${
+                    engsegCfg.enabled
+                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border-neutral-200 dark:border-neutral-700'
+                  }`}
+                >
+                  {engsegCfg.enabled ? '2FA Ativo' : '2FA Desativado'}
+                </span>
+              </div>
+
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
+                Protege o painel administrativo do <strong>Agenda Ativa</strong> com código OTP de 6 dígitos enviado por e-mail via Apps Script (ou código de teste local quando offline). A página pública de agendamento continua livre para clientes.
+              </p>
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    E-mail Autorizado para Receber Códigos 2FA
+                  </label>
+                  <input
+                    type="email"
+                    inputMode="email"
+                    pattern="[^@\s]+@[^@\s]+\.[^@\s]+"
+                    title="Informe um e-mail válido contendo @"
+                    value={engsegCfg.email}
+                    onChange={(e) => {
+                      setEngsegErroMsg(null);
+                      saveEngsegConfig({ email: sanitizarEmailInput(e.target.value) });
+                    }}
+                    placeholder="admin@empresa.com.br"
+                    className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white text-xs focus:outline-none focus:border-orange-500"
+                  />
+                  {engsegErroMsg && (
+                    <p className="text-[11px] text-rose-600 dark:text-rose-400 font-medium mt-1">
+                      {engsegErroMsg}
+                    </p>
+                  )}
+                </div>
+
+                {/* Botão Único de Ativação / Desativação para Testes */}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={engsegCfg.enforcedByServer}
+                    onClick={handleToggleEngsegSingleButton}
+                    className={`flex-1 min-w-[210px] px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                      engsegCfg.enforcedByServer
+                        ? 'bg-emerald-600/80 text-white cursor-not-allowed'
+                        : engsegCfg.enabled
+                        ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm cursor-pointer'
+                        : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm cursor-pointer'
+                    }`}
+                  >
+                    {engsegCfg.enforcedByServer ? (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>2FA Obrigatório via Servidor (ENGSEG_REQUIRED=true)</span>
+                      </>
+                    ) : engsegCfg.enabled ? (
+                      <>
+                        <Unlock className="w-4 h-4" />
+                        <span>Desativar 2FA (Botão Único de Teste)</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>Ativar 2FA Agora (Botão Único de Teste)</span>
+                      </>
+                    )}
+                  </button>
+
+                  {engsegCfg.enabled && engsegVerified && (
+                    <button
+                      type="button"
+                      onClick={() => clearEngsegSession()}
+                      className="px-3.5 py-2.5 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 border border-neutral-300 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-xl text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <KeyRound className="w-3.5 h-3.5 text-orange-500" />
+                      <span>Bloquear Agora</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* PÁGINA 3: BANCO DE DADOS (MOTOR DADOS DRIVE v2.0) */}
+      {section === 'banco' && (
+        <div className="max-w-4xl space-y-6">
+          {!canAccessBanco ? (
+            <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3 shadow-sm">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <Lock className="w-4 h-4" />
+                <h3 className="text-sm font-semibold">Banco de Dados (Acesso Restrito)</h3>
+              </div>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
+                Seu perfil atual (<strong>{currentUser.perfil}</strong>) possui acesso restrito às integrações de banco de dados. A gestão do Motor Google Drive e URLs de Apps Script é controlada pelo Administrador.
+              </p>
+            </div>
+          ) : (
           <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-4 shadow-sm transition-colors">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -1375,8 +1607,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onDataSynced }) => {
               </div>
             </div>
           </div>
+          )}
         </div>
-      </div>
+      )}
     </div>
   );
 };

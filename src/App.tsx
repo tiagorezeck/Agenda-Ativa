@@ -11,10 +11,21 @@ import { CrmKanbanView } from './components/crm/CrmKanbanView';
 import { QRCodeModal } from './components/qrcode/QRCodeModal';
 import { PublicBookingView } from './components/public/PublicBookingView';
 import { SettingsView } from './components/settings/SettingsView';
+import { UsersView } from './components/settings/UsersView';
 import { EngsegTwoFactorGate } from './components/security/EngsegTwoFactorGate';
+import { LoginLandingView } from './components/security/LoginLandingView';
+import { GoalsView } from './components/goals/GoalsView';
 import { storage } from './services/storageService';
 import { applyDriveOverrideFromLocation, isCloudActive } from './services/driveSyncService';
 import { getEngsegConfig, isEngsegSessionVerified, subscribeEngseg } from './services/engsegService';
+import {
+  getLoggedInUser,
+  podeAcessarModulo,
+  podeAcessarConfigEmpresa,
+  podeAcessarConfigBanco,
+  podeAcessarConfigUsuarios,
+  podeAcessarConfigEngseg
+} from './services/authService';
 import { EventoEntity } from './types/database';
 
 export default function App() {
@@ -23,9 +34,44 @@ export default function App() {
   const [publicSlug, setPublicSlug] = useState<string>('');
   const [isThankYouClosedRoute, setIsThankYouClosedRoute] = useState(false);
 
-  // Tema Claro e Escuro
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    return Boolean(localStorage.getItem('agenda_ativa_current_user'));
+  });
+
+  useEffect(() => {
+    const canViewTab = (tab: ActiveTab): boolean => {
+      const usr = getLoggedInUser();
+      if (tab === 'config_empresa') return podeAcessarConfigEmpresa(usr);
+      if (tab === 'config_banco') return podeAcessarConfigBanco(usr);
+      if (tab === 'config_usuarios') return podeAcessarConfigUsuarios(usr);
+      if (tab === 'config_engseg') return podeAcessarConfigEngseg(usr);
+      return podeAcessarModulo(usr, tab);
+    };
+
+    const handleAuthChange = () => {
+      const logged = Boolean(localStorage.getItem('agenda_ativa_current_user'));
+      setIsLoggedIn(logged);
+      if (logged) {
+        setActiveTab(prev => (canViewTab(prev) ? prev : 'dashboard'));
+      }
+    };
+    window.addEventListener('auth_user_changed', handleAuthChange);
+    return () => window.removeEventListener('auth_user_changed', handleAuthChange);
+  }, []);
+
+  // Tema Claro e Escuro (com detecção do navegador no primeiro acesso)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem('app_theme') as 'light' | 'dark') || 'dark';
+    const saved = localStorage.getItem('app_theme');
+    let initial: 'light' | 'dark' = 'light';
+    if (saved === 'light' || saved === 'dark') {
+      initial = saved;
+    } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      initial = 'dark';
+    }
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('dark', initial === 'dark');
+    }
+    return initial;
   });
 
   // Menu Lateral Retrátil com Fixação por Botão
@@ -183,6 +229,18 @@ export default function App() {
     setRefreshCounter(c => c + 1);
   };
 
+  // Se não estiver logado e não for visualização pública, exibe a Mini Landing Page de Login
+  if (!isLoggedIn && !isPublicView) {
+    return (
+      <LoginLandingView
+        onLoginSuccess={() => setIsLoggedIn(true)}
+        onOpenPublicBooking={handleOpenPublicGeneral}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+    );
+  }
+
   // Visualização pública 100% independente (sem acesso ao painel administrativo)
   if (isPublicView) {
     return (
@@ -224,6 +282,7 @@ export default function App() {
         onRefresh={handleRefresh}
         isPinned={isPinned}
         onTogglePin={handleTogglePin}
+        theme={theme}
       />
 
       {/* Área de Conteúdo Principal */}
@@ -238,6 +297,8 @@ export default function App() {
           onNewEvent={() => setModalNewEventOpen(true)}
           onOpenPublic={handleOpenPublicGeneral}
           onResetDemo={handleResetDemo}
+          onLogout={() => setIsLoggedIn(false)}
+          onOpenProfile={() => setActiveTab('config_usuarios')}
         />
 
         {/* Viewport dos Módulos com Rolagem */}
@@ -279,6 +340,8 @@ export default function App() {
 
           {activeTab === 'crm' && <CrmKanbanView key={refreshCounter} />}
 
+          {activeTab === 'metas' && <GoalsView key={refreshCounter} />}
+
           {activeTab === 'qrcode' && (
             <div className="space-y-6">
               <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-sm">
@@ -313,8 +376,24 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'configuracoes' && (
-            <SettingsView onDataSynced={handleRefresh} />
+          {activeTab === 'config_empresa' && podeAcessarConfigEmpresa(getLoggedInUser()) && (
+            <SettingsView key="empresa" section="empresa" onDataSynced={() => setRefreshCounter((c) => c + 1)} />
+          )}
+
+          {activeTab === 'config_banco' && podeAcessarConfigBanco(getLoggedInUser()) && (
+            <SettingsView key="banco" section="banco" onDataSynced={() => setRefreshCounter((c) => c + 1)} />
+          )}
+
+          {activeTab === 'config_usuarios' && (
+            <UsersView
+              key="usuarios"
+              onlySelf={!podeAcessarConfigUsuarios(getLoggedInUser())}
+              onDataSynced={() => setRefreshCounter((c) => c + 1)}
+            />
+          )}
+
+          {activeTab === 'config_engseg' && podeAcessarConfigEngseg(getLoggedInUser()) && (
+            <SettingsView key="engseg" section="engseg" onDataSynced={() => setRefreshCounter((c) => c + 1)} />
           )}
         </main>
       </div>

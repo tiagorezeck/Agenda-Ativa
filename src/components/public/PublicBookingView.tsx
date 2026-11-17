@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { storage } from '../../services/storageService';
 import { isCloudActive } from '../../services/driveSyncService';
 import { BookingSubmissionPayload, BookingSuccessResult } from '../../types/api';
@@ -47,6 +47,8 @@ interface PublicBookingViewProps {
   onToggleTheme?: () => void;
 }
 
+const recentEventVisitTimestamps = new Map<string, number>();
+
 export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   initialSlug,
   initialThankYouClosed = false,
@@ -55,6 +57,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   onToggleTheme
 }) => {
   const [, setSyncTick] = useState(0);
+  const trackedVisitsInMountRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const unsub = storage.subscribe(() => setSyncTick((t) => t + 1));
@@ -102,6 +105,21 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
     return eventos[0] || null;
   }, [eventos, selectedSlug, initialSlug]);
+
+  // Contabiliza visita no link público do evento (evita duplicidade em StrictMode/re-render)
+  useEffect(() => {
+    if (cloudState.bootstrapping || !eventoAtual?.id_evento || initialThankYouClosed) return;
+    const evId = eventoAtual.id_evento;
+    if (trackedVisitsInMountRef.current.has(evId)) return;
+
+    const now = Date.now();
+    const lastTs = recentEventVisitTimestamps.get(evId) || 0;
+    trackedVisitsInMountRef.current.add(evId);
+    if (now - lastTs < 2500) return;
+
+    recentEventVisitTimestamps.set(evId, now);
+    storage.incrementEventoVisita(evId);
+  }, [cloudState.bootstrapping, eventoAtual?.id_evento, initialThankYouClosed]);
 
   // Informações da Empresa (Cadastradas em Configurações)
   const empresaNome = db.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || 'Agenda Ativa';

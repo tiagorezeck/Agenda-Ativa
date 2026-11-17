@@ -43,16 +43,19 @@ function inicializarPlanilha() {
   var configSheet = ss.getSheetByName("CONFIG");
   if (configSheet && configSheet.getLastRow() <= 1) {
     var now = new Date().toISOString();
-    configSheet.appendRow(["EMPRESA_NOME", "Minha Empresa de Atendimento", "Razão Social / Nome Fantasia", now]);
+    configSheet.appendRow(["EMPRESA_NOME", "Agenda Ativa", "Razão Social / Nome Fantasia", now]);
     configSheet.appendRow(["FUSO_HORARIO", "America/Sao_Paulo", "Fuso horário oficial", now]);
-    configSheet.appendRow(["WHATSAPP_CONTATO", "5511999998888", "WhatsApp de suporte", now]);
+    configSheet.appendRow(["WHATSAPP_CONTATO", "", "WhatsApp de suporte", now]);
     configSheet.appendRow(["TERMOS_LGPD", "Seus dados serão utilizados exclusivamente para contato e realização do atendimento.", "Texto de consentimento LGPD", now]);
   }
 
   var userSheet = ss.getSheetByName("USUARIOS");
   if (userSheet && userSheet.getLastRow() <= 1) {
     var nowUsr = new Date().toISOString();
-    userSheet.appendRow(["USR-001", "Administrador do Sistema", "admin@empresa.com.br", "ADMIN", true, nowUsr]);
+    userSheet.appendRow([
+      "USR-001", "Administrador", "admin", "admin", "",
+      "", "Administrador", "Administração", "", "ADMIN", "{}", true, nowUsr, nowUsr
+    ]);
   }
 
   try {
@@ -77,7 +80,10 @@ var MAX_LOGS_IN_ROOT = 500;
 
 var SHEETS_SCHEMA = {
   CONFIG: ["chave", "valor", "descricao", "atualizado_em"],
-  USUARIOS: ["id_usuario", "nome", "email", "perfil", "ativo", "criado_em"],
+  USUARIOS: [
+    "id_usuario", "nome", "email", "senha", "foto_url", "telefone",
+    "cargo", "departamento", "observacoes", "perfil", "permissoes", "ativo", "criado_em", "atualizado_em"
+  ],
   EVENTOS: [
     "id_evento", "slug", "nome", "descricao", "imagem_url",
     "produto_nome", "produto_valor_mensal", "produto_parcelas", "produto_valor", "exibir_produto_publico",
@@ -86,7 +92,7 @@ var SHEETS_SCHEMA = {
     "data_inicio", "data_fim", "dias_semana", "duracao_minutos",
     "intervalo_minutos", "capacidade_padrao", "responsavel_id",
     "status", "mensagem_confirmacao", "permite_cancelamento",
-    "horas_antecedencia_cancelamento", "criado_em", "atualizado_em"
+    "horas_antecedencia_cancelamento", "visitas", "criado_em", "atualizado_em"
   ],
   HORARIOS: ["id_horario", "id_evento", "hora_inicio", "hora_fim", "capacidade", "dias_aplicaveis", "ativo"],
   BLOQUEIOS: ["id_bloqueio", "id_evento", "data", "hora_inicio", "hora_fim", "motivo", "criado_por", "criado_em"],
@@ -453,6 +459,38 @@ function doPost(e) {
         status: "success",
         data: reschedOutcome.data,
         database: dbResched
+      });
+    }
+
+    // 4D. CONTABILIZAR VISITA NO LINK PÚBLICO DO EVENTO (SOB LOCK)
+    if (action === "INCREMENT_EVENT_VISIT") {
+      var dbVisit = loadAuthoritativeDatabaseFast(folder, false);
+      var visitInput = payload.data || payload.payload || payload;
+      var targetId = String(visitInput.id_evento || "").trim().toLowerCase();
+      var targetSlug = String(visitInput.slug || "").trim().toLowerCase();
+      var evListVisit = Array.isArray(dbVisit.eventos) ? dbVisit.eventos : [];
+      var updatedEv = null;
+      for (var vi = 0; vi < evListVisit.length; vi++) {
+        var evItem = evListVisit[vi];
+        if (!evItem) continue;
+        var evIdNorm = String(evItem.id_evento || "").trim().toLowerCase();
+        var evSlugNorm = String(evItem.slug || "").trim().toLowerCase();
+        if ((targetId && evIdNorm === targetId) || (targetSlug && evSlugNorm === targetSlug)) {
+          evItem.visitas = (Number(evItem.visitas) || 0) + 1;
+          updatedEv = evItem;
+          break;
+        }
+      }
+      if (!updatedEv) {
+        return jsonResponse({ status: "error", statusCode: 404, message: "Evento não encontrado para contabilizar visita." }, 404);
+      }
+      var serializedVisit = JSON.stringify(dbVisit);
+      upsertRootJsonFileFast(folder, serializedVisit);
+      putToCache(CACHE_KEY_ROOT, serializedVisit, CACHE_TTL_SECONDS);
+      return jsonResponse({
+        status: "success",
+        id_evento: updatedEv.id_evento,
+        visitas: updatedEv.visitas
       });
     }
 
@@ -1023,7 +1061,13 @@ function syncDataToGoogleSheets(ss, data) {
   });
 
   mirrorArrayToSheet(ss, "USUARIOS", SHEETS_SCHEMA.USUARIOS, data.usuarios, function(u) {
-    return [u.id_usuario || Utilities.getUuid(), u.nome || "", u.email || "", u.perfil || "", u.ativo !== false, u.criado_em || ""];
+    return [
+      u.id_usuario || Utilities.getUuid(), u.nome || "", u.email || "", u.senha || "",
+      u.foto_url || "", u.telefone || "", u.cargo || "", u.departamento || "",
+      u.observacoes || "", u.perfil || "AGENTE",
+      u.permissoes ? JSON.stringify(u.permissoes) : "{}",
+      u.ativo !== false, u.criado_em || "", u.atualizado_em || ""
+    ];
   });
 
   mirrorArrayToSheet(ss, "EVENTOS", SHEETS_SCHEMA.EVENTOS, data.eventos, function(ev) {
@@ -1038,7 +1082,7 @@ function syncDataToGoogleSheets(ss, data) {
       Number(ev.duracao_minutos) || 60, Number(ev.intervalo_minutos) || 0, Number(ev.capacidade_padrao) || 1,
       ev.responsavel_id || "", ev.status || "PUBLICADO", ev.mensagem_confirmacao || "",
       ev.permite_cancelamento !== false, Number(ev.horas_antecedencia_cancelamento) || 24,
-      ev.criado_em || "", ev.atualizado_em || ""
+      Number(ev.visitas) || 0, ev.criado_em || "", ev.atualizado_em || ""
     ];
   });
 
@@ -1345,9 +1389,17 @@ function readDatabaseFromSheets(folder) {
           id_usuario: String(u.id_usuario || ""),
           nome: String(u.nome || ""),
           email: String(u.email || ""),
+          senha: u.senha ? String(u.senha) : (String(u.id_usuario || "") === "USR-001" ? "admin" : undefined),
+          foto_url: u.foto_url ? String(u.foto_url) : undefined,
+          telefone: u.telefone ? String(u.telefone) : undefined,
+          cargo: u.cargo ? String(u.cargo) : undefined,
+          departamento: u.departamento ? String(u.departamento) : undefined,
+          observacoes: u.observacoes ? String(u.observacoes) : undefined,
           perfil: String(u.perfil || "ADMIN"),
+          permissoes: parseJsonCell(u.permissoes, undefined),
           ativo: u.ativo !== false && String(u.ativo).toLowerCase() !== "false",
-          criado_em: String(u.criado_em || "")
+          criado_em: String(u.criado_em || ""),
+          atualizado_em: u.atualizado_em ? String(u.atualizado_em) : undefined
         };
       }),
       eventos: eventosRaw.map(function(ev) {
@@ -1379,6 +1431,7 @@ function readDatabaseFromSheets(folder) {
           mensagem_confirmacao: String(ev.mensagem_confirmacao || ""),
           permite_cancelamento: ev.permite_cancelamento !== false && String(ev.permite_cancelamento).toLowerCase() !== "false",
           horas_antecedencia_cancelamento: Number(ev.horas_antecedencia_cancelamento) || 24,
+          visitas: Number(ev.visitas) || 0,
           criado_em: String(ev.criado_em || ""),
           atualizado_em: String(ev.atualizado_em || "")
         };

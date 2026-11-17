@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { storage } from '../../services/storageService';
-import { LeadEntity, StatusClienteLead } from '../../types/database';
+import { getLoggedInUser, podeAcessarTodoCrm } from '../../services/authService';
+import { LeadEntity, StatusClienteLead, UsuarioEntity } from '../../types/database';
 import {
   formatarDataBR,
   formatarDataHoraBR,
@@ -35,14 +36,34 @@ import {
 
 export const LeadsView: React.FC = () => {
   const [refreshKey, setRefreshKey] = useState(0);
+  const [currentUser, setCurrentUser] = useState<UsuarioEntity>(() => getLoggedInUser());
   const db = storage.getDatabase();
-  const leadsAtivos = useMemo(() => db.leads.filter(l => !l.excluido), [db.leads, refreshKey]);
+
+  useEffect(() => {
+    const handleAuth = () => setCurrentUser(getLoggedInUser());
+    window.addEventListener('auth_user_changed', handleAuth);
+    return () => window.removeEventListener('auth_user_changed', handleAuth);
+  }, []);
+
+  const canAccessAll = podeAcessarTodoCrm(currentUser);
+
+  const isLeadVisibleForUser = (l: LeadEntity) => {
+    if (canAccessAll) return true;
+    if (l.responsavel_id === currentUser.id_usuario) return true;
+    const ev = db.eventos.find(e => e.id_evento === l.origem_primeiro_evento);
+    return ev?.responsavel_id === currentUser.id_usuario;
+  };
+
+  const leadsAtivos = useMemo(
+    () => db.leads.filter(l => !l.excluido && isLeadVisibleForUser(l)),
+    [db.leads, db.eventos, refreshKey, canAccessAll, currentUser.id_usuario]
+  );
   const leadsLixeira = useMemo(
     () =>
       db.leads
-        .filter(l => l.excluido)
+        .filter(l => l.excluido && isLeadVisibleForUser(l))
         .sort((a, b) => (b.excluido_em || '').localeCompare(a.excluido_em || '')),
-    [db.leads, refreshKey]
+    [db.leads, db.eventos, refreshKey, canAccessAll, currentUser.id_usuario]
   );
 
   const [abaAtiva, setAbaAtiva] = useState<'ATIVOS' | 'LIXEIRA'>('ATIVOS');

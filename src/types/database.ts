@@ -10,14 +10,47 @@ export interface ConfigEntity {
   atualizado_em: string;
 }
 
-export type PerfilUsuario = 'ADMIN' | 'ATENDENTE' | 'COMERCIAL';
+export type PerfilUsuario = 'ADMIN' | 'GESTOR' | 'AGENTE' | 'COMERCIAL' | 'ATENDENTE';
+
+export interface UsuarioPermissoes {
+  dashboard?: boolean;
+  eventos?: boolean;
+  disponibilidade?: boolean;
+  formularios?: boolean;
+  leads?: boolean;
+  crm?: boolean;
+  metas?: boolean;
+  qrcode?: boolean;
+  config_empresa?: boolean;
+  config_usuarios?: boolean;
+  config_banco?: boolean;
+  config_engseg?: boolean;
+  apenas_proprios_eventos?: boolean;
+}
 
 export interface UsuarioEntity {
   id_usuario: string; // ex: USR-001
   nome: string;
   email: string;
+  senha?: string;
+  foto_url?: string;
+  telefone?: string;
+  cargo?: string;
+  departamento?: string;
+  observacoes?: string;
   perfil: PerfilUsuario;
+  permissoes?: UsuarioPermissoes;
   ativo: boolean;
+  criado_em: string;
+  atualizado_em?: string;
+}
+
+export interface NotificacaoEntity {
+  id_notificacao: string;
+  tipo: 'AGENDAMENTO' | 'CRM_GANHO' | 'LEAD' | 'SISTEMA';
+  titulo: string;
+  mensagem: string;
+  lida: boolean;
   criado_em: string;
 }
 
@@ -53,6 +86,7 @@ export interface EventoEntity {
   mensagem_confirmacao: string;
   permite_cancelamento: boolean;
   horas_antecedencia_cancelamento: number;
+  visitas?: number;
   criado_em: string;
   atualizado_em: string;
 }
@@ -240,6 +274,23 @@ export interface SheetDatabase {
   historico_crm: HistoricoCrmEntity[];
   tarefas: TarefaEntity[];
   logs: LogEntity[];
+  notificacoes: NotificacaoEntity[];
+  metas: MetaEntity[];
+}
+
+export interface MetaEntity {
+  id_meta: string;
+  responsavel_id: string;
+  titulo: string;
+  tipo: 'DINHEIRO' | 'NUMERO' | 'CUSTOM' | 'EVENTO';
+  meta_alvo: number;
+  valor_manual?: number;
+  periodo: string;
+  criado_em: string;
+  id_evento?: string;
+  meta_visitas?: number;
+  meta_leads?: number;
+  meta_conversao?: number;
 }
 
 /**
