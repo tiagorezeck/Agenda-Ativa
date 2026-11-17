@@ -779,7 +779,7 @@ function executeAtomicBookingOnDb(db, bookingData) {
     id_oportunidade: idOportunidade,
     id_lead: idLead,
     id_agendamento_origem: idAgendamento,
-    titulo: "Atendimento: " + bookingData.nome + " (" + (nomeProduto || evento.nome) + ")",
+    titulo: bookingData.nome,
     produto_nome: nomeProduto,
     produto_valor_mensal: valorMensal > 0 ? valorMensal : 0,
     produto_parcelas: valorMensal > 0 ? parcelas : 1,

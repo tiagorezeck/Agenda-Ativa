@@ -86,6 +86,7 @@ export const LeadsView: React.FC = () => {
   const [editEmpresa, setEditEmpresa] = useState('');
   const [editCargo, setEditCargo] = useState('');
   const [editLocal, setEditLocal] = useState('');
+  const [editAlunoGanhador, setEditAlunoGanhador] = useState('');
   const [editStatusCliente, setEditStatusCliente] = useState<StatusClienteLead>('LEAD');
   const [editObservacoes, setEditObservacoes] = useState('');
   const [editErro, setEditErro] = useState<string | null>(null);
@@ -159,7 +160,8 @@ export const LeadsView: React.FC = () => {
         lead.whatsapp.includes(termo) ||
         (lead.email && lead.email.toLowerCase().includes(termo)) ||
         (lead.empresa && lead.empresa.toLowerCase().includes(termo)) ||
-        (lead.local && lead.local.toLowerCase().includes(termo))
+        (lead.local && lead.local.toLowerCase().includes(termo)) ||
+        (lead.aluno_ganhador && lead.aluno_ganhador.toLowerCase().includes(termo))
       );
     });
   }, [baseLista, busca, eventoFiltro, localFiltro, statusFiltro, db.crm, db.eventos]);
@@ -206,6 +208,7 @@ export const LeadsView: React.FC = () => {
     setEditEmpresa(lead.empresa || '');
     setEditCargo(lead.cargo || '');
     setEditLocal(lead.local || '');
+    setEditAlunoGanhador(lead.aluno_ganhador || '');
     setEditStatusCliente(resumo.statusComercial);
     setEditObservacoes(lead.observacoes || '');
     setEditErro(null);
@@ -242,6 +245,7 @@ export const LeadsView: React.FC = () => {
       empresa: editEmpresa.trim(),
       cargo: editCargo.trim(),
       local: editLocal.trim() || undefined,
+      aluno_ganhador: editAlunoGanhador.trim() || undefined,
       status_cliente: editStatusCliente,
       observacoes: editObservacoes.trim(),
       atualizado_em: new Date().toISOString()
@@ -719,7 +723,16 @@ export const LeadsView: React.FC = () => {
                         <span>·</span>
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/50 text-orange-800 dark:text-orange-300 font-medium">
                           <MapPin className="w-3 h-3 text-orange-500 shrink-0" />
-                          <span>Local: {leadSelecionado.local}</span>
+                          <span>Escola / Local: {leadSelecionado.local}</span>
+                        </span>
+                      </>
+                    )}
+                    {leadSelecionado.aluno_ganhador && (
+                      <>
+                        <span>·</span>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300 font-medium">
+                          <Award className="w-3 h-3 text-amber-500 shrink-0" />
+                          <span>Aluno ganhador: {leadSelecionado.aluno_ganhador}</span>
                         </span>
                       </>
                     )}
@@ -1041,7 +1054,7 @@ export const LeadsView: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                    Local / Campanha (Escola, Bairro, Unidade)
+                    Escola / Local (Escola, Bairro, Unidade)
                   </label>
                   <input
                     type="text"
@@ -1052,16 +1065,29 @@ export const LeadsView: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">Status Comercial</label>
-                  <select
-                    value={editStatusCliente}
-                    onChange={(e) => setEditStatusCliente(e.target.value as StatusClienteLead)}
+                  <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                    Nome Completo do Aluno Ganhador
+                  </label>
+                  <input
+                    type="text"
+                    value={editAlunoGanhador}
+                    onChange={(e) => setEditAlunoGanhador(e.target.value)}
+                    placeholder="Ex: Pedro Henrique Souza"
                     className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white"
-                  >
-                    <option value="LEAD">Lead (Em Prospecção / Funil)</option>
-                    <option value="CLIENTE">Cliente (Já Comprou)</option>
-                  </select>
+                  />
                 </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-neutral-700 dark:text-neutral-300 mb-1">Status Comercial</label>
+                <select
+                  value={editStatusCliente}
+                  onChange={(e) => setEditStatusCliente(e.target.value as StatusClienteLead)}
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-neutral-900 dark:text-white"
+                >
+                  <option value="LEAD">Lead (Em Prospecção / Funil)</option>
+                  <option value="CLIENTE">Cliente (Já Comprou)</option>
+                </select>
               </div>
 
               <div>

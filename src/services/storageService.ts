@@ -317,7 +317,7 @@ const INITIAL_DATABASE: SheetDatabase = {
       id_oportunidade: 'CRM-0001',
       id_lead: 'LED-0001',
       id_agendamento_origem: 'AGD-202611-0001',
-      titulo: 'Atendimento: Carlos Eduardo Mendes (Mentoria Comercial)',
+      titulo: 'Carlos Eduardo Mendes',
       produto_nome: 'Mentoria Comercial Estratégica (Pacote 90 dias)',
       produto_valor_mensal: 1000,
       produto_parcelas: 5,
@@ -334,7 +334,7 @@ const INITIAL_DATABASE: SheetDatabase = {
       id_oportunidade: 'CRM-0002',
       id_lead: 'LED-0002',
       id_agendamento_origem: 'AGD-202611-0002',
-      titulo: 'Atendimento: Juliana Barros Rocha (Mentoria Comercial)',
+      titulo: 'Juliana Barros Rocha',
       estagio: 'REUNIAO',
       sub_status: 'FOLLOW',
       valor_estimado: 8500,
@@ -964,15 +964,24 @@ class StorageService {
     const whatsappNorm = normalizarWhatsApp(payload.whatsapp);
     const emailNorm = (payload.email || '').trim().toLowerCase();
     let localNorm = (payload.local || '').trim();
-    if (!localNorm && payload.respostas_customizadas) {
+    let alunoGanhadorNorm = '';
+    if (payload.respostas_customizadas) {
       const camposEvento = this.db.campos_formulario.filter(c => c.id_evento === evento.id_evento);
       for (const [cid, val] of Object.entries(payload.respostas_customizadas)) {
         if (!val || !String(val).trim()) continue;
         const campo = camposEvento.find(c => c.id_campo === cid);
-        const refTxt = `${campo?.nome_campo || ''} ${campo?.label || ''}`.toLowerCase();
-        if (refTxt.includes('local') || refTxt.includes('escola') || refTxt.includes('bairro')) {
+        const refTxt = `${campo?.nome_campo || ''} ${campo?.label || ''}`
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '');
+        if (!localNorm && (refTxt.includes('local') || refTxt.includes('escola') || refTxt.includes('bairro'))) {
           localNorm = String(val).trim();
-          break;
+        }
+        if (
+          !alunoGanhadorNorm &&
+          (refTxt.includes('ganhador') || refTxt.includes('aluno') || refTxt.includes('estudante') || refTxt.includes('bolsista') || refTxt.includes('contemplado'))
+        ) {
+          alunoGanhadorNorm = String(val).trim();
         }
       }
     }
@@ -991,6 +1000,7 @@ class StorageService {
       lead.nome = payload.nome || lead.nome;
       if (payload.empresa) lead.empresa = payload.empresa;
       if (localNorm) lead.local = localNorm;
+      if (alunoGanhadorNorm) lead.aluno_ganhador = alunoGanhadorNorm;
       lead.total_agendamentos += 1;
       lead.data_ultimo_agendamento = nowIso;
       lead.atualizado_em = nowIso;
@@ -1003,6 +1013,7 @@ class StorageService {
         email: emailNorm,
         empresa: payload.empresa || '',
         local: localNorm || undefined,
+        aluno_ganhador: alunoGanhadorNorm || undefined,
         status_cliente: 'LEAD',
         origem_primeiro_evento: evento.id_evento,
         total_agendamentos: 1,
@@ -1059,7 +1070,7 @@ class StorageService {
       id_oportunidade: idOportunidade,
       id_lead: idLead,
       id_agendamento_origem: idAgendamento,
-      titulo: `Atendimento: ${payload.nome} (${nomeProduto || evento.nome})`,
+      titulo: payload.nome,
       produto_nome: nomeProduto || undefined,
       produto_valor_mensal: valorMensal > 0 ? valorMensal : undefined,
       produto_parcelas: valorMensal > 0 ? parcelas : undefined,

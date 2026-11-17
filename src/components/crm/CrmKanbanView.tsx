@@ -3,10 +3,12 @@ import { storage } from '../../services/storageService';
 import { getLoggedInUser, podeAcessarTodoCrm } from '../../services/authService';
 import {
   AgendamentoEntity,
+  CampoFormularioEntity,
   CrmOportunidadeEntity,
   EstagioCrm,
   EventoEntity,
   LeadEntity,
+  RespostaEntity,
   StatusAgendamento,
   TipoHistoricoCrm,
   UsuarioEntity
@@ -23,10 +25,12 @@ import {
   Zap,
   PauseCircle,
   ArrowRightLeft,
-  Filter,
   RotateCcw,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  MapPin,
+  GraduationCap,
+  FileSpreadsheet
 } from 'lucide-react';
 
 export type ColunaCrmId = 'ENTRADA' | 'REUNIAO' | 'FOLLOW_UP_STAND_BY' | 'GANHO' | 'PERDIDO' | 'CANCELADO';
@@ -124,6 +128,58 @@ export const CrmKanbanView: React.FC = () => {
     return map;
   }, [db.usuarios, refreshKey]);
 
+  const camposById = useMemo(() => {
+    const map = new Map<string, CampoFormularioEntity>();
+    db.campos_formulario.forEach((c) => map.set(c.id_campo, c));
+    return map;
+  }, [db.campos_formulario, refreshKey]);
+
+  const normalizeText = (value: string) =>
+    value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+
+  const scoreCampoAlunoGanhador = (campo?: CampoFormularioEntity): number => {
+    if (!campo) return 0;
+    const txt = normalizeText(`${campo.label} ${campo.nome_campo}`);
+    if (txt.includes('aluno') && txt.includes('ganhador')) return 100;
+    if (txt.includes('ganhador')) return 90;
+    if (txt.includes('aluno') && txt.includes('nome')) return 85;
+    if (txt.includes('aluno')) return 80;
+    if (txt.includes('estudante') || txt.includes('bolsista') || txt.includes('contemplado')) return 70;
+    if (txt.includes('filho') || txt.includes('crianca') || txt.includes('jovem')) return 60;
+    return 0;
+  };
+
+  const scoreCampoEscolaLocal = (campo?: CampoFormularioEntity): number => {
+    if (!campo) return 0;
+    const txt = normalizeText(`${campo.label} ${campo.nome_campo}`);
+    if (txt.includes('escola')) return 100;
+    if (txt.includes('colegio') || txt.includes('instituicao')) return 90;
+    if (txt.includes('local') || txt.includes('unidade') || txt.includes('bairro')) return 80;
+    return 0;
+  };
+
+  const getBestRespostaByScore = (
+    respostas: RespostaEntity[],
+    scorer: (campo?: CampoFormularioEntity) => number
+  ): string => {
+    let bestScore = 0;
+    let bestValue = '';
+    for (const r of respostas) {
+      const val = (r.valor || '').trim();
+      if (!val) continue;
+      const sc = scorer(camposById.get(r.id_campo));
+      if (sc > bestScore) {
+        bestScore = sc;
+        bestValue = val;
+      }
+    }
+    return bestValue;
+  };
+
   const getCardContext = (card: CrmOportunidadeEntity) => {
     const lead = leadsById.get(card.id_lead);
     const agendamento = card.id_agendamento_origem
@@ -143,7 +199,39 @@ export const CrmKanbanView: React.FC = () => {
       evento = eventosById.get(lead.origem_primeiro_evento);
     }
 
-    return { lead, agendamento, evento };
+    const respostasAgendamento = card.id_agendamento_origem
+      ? db.respostas.filter((r) => r.id_agendamento === card.id_agendamento_origem)
+      : [];
+    const respostasLead = lead
+      ? db.respostas.filter((r) => r.id_lead === lead.id_lead)
+      : [];
+    const respostasCard = respostasAgendamento.length > 0 ? respostasAgendamento : respostasLead;
+
+    const alunoFromAgd = getBestRespostaByScore(respostasAgendamento, scoreCampoAlunoGanhador);
+    const alunoFromLeadRespostas = getBestRespostaByScore(respostasLead, scoreCampoAlunoGanhador);
+    const alunoGanhador =
+      alunoFromAgd || (lead?.aluno_ganhador || '').trim() || alunoFromLeadRespostas;
+
+    const escolaFromAgd = getBestRespostaByScore(respostasAgendamento, scoreCampoEscolaLocal);
+    const escolaFromLeadRespostas = getBestRespostaByScore(respostasLead, scoreCampoEscolaLocal);
+    const escolaLocal =
+      (lead?.local || lead?.empresa || '').trim() || escolaFromAgd || escolaFromLeadRespostas;
+
+    const cleanedTitulo = card.titulo
+      .replace(/^Atendimento:\s*/i, '')
+      .replace(/\s*\([^)]*\)\s*$/, '')
+      .trim();
+    const leadNomeDisplay = lead?.nome?.trim() || cleanedTitulo || card.titulo;
+
+    return {
+      lead,
+      agendamento,
+      evento,
+      respostasCard,
+      alunoGanhador,
+      escolaLocal,
+      leadNomeDisplay
+    };
   };
 
   // Helper para verificar se o card pertence à coluna
@@ -203,7 +291,7 @@ export const CrmKanbanView: React.FC = () => {
     const termo = busca.trim().toLowerCase();
     return crmCards.filter((card) => {
       if (responsavelFiltro !== 'todos' && card.responsavel_id !== responsavelFiltro) return false;
-      const { lead, agendamento, evento } = getCardContext(card);
+      const { lead, agendamento, evento, alunoGanhador, escolaLocal, leadNomeDisplay } = getCardContext(card);
       if (!canAccessAllCrm) {
         const isOwner =
           card.responsavel_id === currentUser.id_usuario ||
@@ -214,7 +302,10 @@ export const CrmKanbanView: React.FC = () => {
       if (eventoFiltro !== 'todos' && evento?.id_evento !== eventoFiltro) return false;
       if (!termo) return true;
       return (
+        leadNomeDisplay.toLowerCase().includes(termo) ||
         card.titulo.toLowerCase().includes(termo) ||
+        alunoGanhador.toLowerCase().includes(termo) ||
+        escolaLocal.toLowerCase().includes(termo) ||
         (lead && (
           lead.nome.toLowerCase().includes(termo) ||
           (lead.local || '').toLowerCase().includes(termo) ||
@@ -224,7 +315,7 @@ export const CrmKanbanView: React.FC = () => {
         (evento && evento.nome.toLowerCase().includes(termo))
       );
     });
-  }, [crmCards, busca, responsavelFiltro, eventoFiltro, agendamentosById, eventosById, leadsById, db.eventos, canAccessAllCrm, currentUser.id_usuario]);
+  }, [crmCards, busca, responsavelFiltro, eventoFiltro, agendamentosById, eventosById, leadsById, camposById, db.eventos, db.respostas, canAccessAllCrm, currentUser.id_usuario]);
 
   // Datas disponíveis nos cards do filtro atual
   const datasDisponiveis = useMemo(() => {
@@ -693,7 +784,14 @@ export const CrmKanbanView: React.FC = () => {
                     </div>
                   ) : (
                     cardsDaColuna.map((card) => {
-                      const { lead, agendamento, evento } = getCardContext(card);
+                      const {
+                        lead,
+                        agendamento,
+                        evento,
+                        alunoGanhador,
+                        escolaLocal,
+                        leadNomeDisplay
+                      } = getCardContext(card);
                       const resp = usuariosById.get(card.responsavel_id);
                       const subStatus = getCardSubStatus(card);
                       const isFollowUpCol = coluna.id === 'FOLLOW_UP_STAND_BY';
@@ -719,34 +817,49 @@ export const CrmKanbanView: React.FC = () => {
                           onClick={() => setCardEmEdicao(card)}
                           className={`p-2.5 border rounded-lg cursor-grab active:cursor-grabbing shadow-xs hover:shadow-md transition-all space-y-1.5 select-none ${cardStyle}`}
                         >
-                          {/* Título e ID */}
-                          <div className="flex items-start justify-between gap-1.5">
-                            <h4 className="text-xs font-semibold line-clamp-2 leading-tight">
-                              {card.titulo}
+                          {/* 1. Nome completo do lead (sem CRM-001 e sem "Atendimento") */}
+                          <div>
+                            <h4 className="text-xs font-bold leading-snug break-words">
+                              {leadNomeDisplay}
                             </h4>
-                            <span className="text-[9px] opacity-60 font-mono shrink-0">
-                              {card.id_oportunidade}
+                          </div>
+
+                          {/* 2. Evento agendado logo abaixo */}
+                          <div className="flex items-center gap-1.5 text-[10px] font-medium opacity-80">
+                            <Calendar className="w-3 h-3 text-orange-500 shrink-0" />
+                            <span className="truncate" title={evento?.nome || card.produto_nome || ''}>
+                              {evento ? evento.nome : (card.produto_nome || 'Evento não vinculado')}
                             </span>
                           </div>
 
-                          {/* Lead & Local */}
-                          {lead && (
-                            <p className="text-[11px] font-medium truncate text-orange-600 dark:text-orange-400">
-                              {lead.nome} {(lead.local || lead.empresa) ? `· ${lead.local || lead.empresa}` : ''}
-                            </p>
-                          )}
-
-                          {/* Evento + Seta de Expandir / Recolher informações */}
-                          <div className="flex items-center justify-between gap-1.5 pt-0.5">
-                            <p className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 truncate flex-1">
-                              {evento ? `Evento: ${evento.nome}` : 'Detalhes do agendamento'}
-                            </p>
+                          {/* 3. Nome completo do aluno ganhador e escola (local) + Seta de expandir */}
+                          <div className="flex items-start justify-between gap-1.5 pt-1 border-t border-current/10">
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              {alunoGanhador && (
+                                <p className="text-[11px] font-semibold text-orange-600 dark:text-orange-400 leading-snug break-words flex items-start gap-1">
+                                  <GraduationCap className="w-3 h-3 shrink-0 mt-0.5" />
+                                  <span>{alunoGanhador}</span>
+                                </p>
+                              )}
+                              {escolaLocal ? (
+                                <p className="text-[10px] font-medium opacity-75 leading-snug break-words flex items-start gap-1">
+                                  <MapPin className="w-2.5 h-2.5 shrink-0 mt-0.5" />
+                                  <span>{escolaLocal}</span>
+                                </p>
+                              ) : (
+                                !alunoGanhador && (
+                                  <p className="text-[10px] opacity-60 italic">
+                                    Detalhes do agendamento
+                                  </p>
+                                )
+                              )}
+                            </div>
                             <button
                               type="button"
                               onClick={(e) => toggleExpandCard(card.id_oportunidade, e)}
                               aria-label={isCardExpanded ? 'Recolher informações' : 'Expandir informações'}
                               title={isCardExpanded ? 'Recolher informações' : 'Expandir informações'}
-                              className="p-0.5 rounded hover:bg-neutral-200/80 dark:hover:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors shrink-0 cursor-pointer"
+                              className="p-0.5 rounded hover:bg-neutral-200/80 dark:hover:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-orange-600 dark:hover:text-orange-400 transition-colors shrink-0 cursor-pointer mt-0.5"
                             >
                               {isCardExpanded ? (
                                 <ChevronUp className="w-3.5 h-3.5" />
@@ -1097,10 +1210,9 @@ export const CrmKanbanView: React.FC = () => {
             {/* Header */}
             <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 flex items-center justify-between">
               <div className="space-y-0.5">
-                <h3 className="text-base font-bold">{cardEmEdicao.titulo}</h3>
-                <p className="text-xs text-neutral-400 font-mono">
-                  ID: {cardEmEdicao.id_oportunidade} · Estágio: {cardEmEdicao.estagio}
-                  {modalEvt ? ` · Evento: ${modalEvt.nome}` : ''}
+                <h3 className="text-base font-bold">{modalCtx.leadNomeDisplay}</h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  {modalEvt ? `Evento: ${modalEvt.nome}` : 'Oportunidade CRM'} · Estágio: {cardEmEdicao.estagio}
                 </p>
               </div>
               <button
@@ -1113,6 +1225,36 @@ export const CrmKanbanView: React.FC = () => {
 
             {/* Content */}
             <div className="p-6 space-y-5 flex-1 overflow-y-auto">
+              {/* Aluno Ganhador, Escola (Local) e Contato do Lead */}
+              {(modalCtx.alunoGanhador || modalCtx.escolaLocal || modalLead?.whatsapp) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl text-xs">
+                  <div>
+                    <span className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400 flex items-center gap-1">
+                      <GraduationCap className="w-3.5 h-3.5 text-orange-500" />
+                      Aluno Ganhador
+                    </span>
+                    <p className="font-semibold text-neutral-900 dark:text-white mt-0.5">
+                      {modalCtx.alunoGanhador || 'Não informado'}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400 flex items-center gap-1">
+                      <MapPin className="w-3.5 h-3.5 text-orange-500" />
+                      Escola (Local)
+                    </span>
+                    <p className="font-semibold text-neutral-900 dark:text-white mt-0.5">
+                      {modalCtx.escolaLocal || 'Não informada'}
+                    </p>
+                  </div>
+                  {modalLead?.whatsapp && (
+                    <div className="sm:col-span-2 pt-2 border-t border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center gap-3 text-[11px] text-neutral-600 dark:text-neutral-300">
+                      <span className="font-mono font-medium">WhatsApp: {formatarTelefoneBR(modalLead.whatsapp)}</span>
+                      {modalLead.email && <span>E-mail: {modalLead.email}</span>}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Controle de Data, Hora e Status do Agendamento */}
               {modalAgd && (
                 <div className="p-4 bg-orange-50/70 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-900/50 rounded-xl space-y-3">
@@ -1130,13 +1272,6 @@ export const CrmKanbanView: React.FC = () => {
                         {modalAgd.protocolo}
                       </span>
                     </div>
-
-                    {modalLead && (
-                      <span className="text-[11px] text-neutral-600 dark:text-neutral-300 font-medium">
-                        {modalLead.whatsapp ? formatarTelefoneBR(modalLead.whatsapp) : ''}
-                        {(modalLead.local || modalLead.empresa) ? ` · ${modalLead.local || modalLead.empresa}` : ''}
-                      </span>
-                    )}
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-orange-200/70 dark:border-orange-900/40">
@@ -1168,6 +1303,27 @@ export const CrmKanbanView: React.FC = () => {
                         );
                       })}
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Respostas do Formulário */}
+              {modalCtx.respostasCard.length > 0 && (
+                <div className="p-3.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-2">
+                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400 flex items-center gap-1.5">
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-orange-500" />
+                    <span>Respostas do Formulário</span>
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {modalCtx.respostasCard.map((resp) => {
+                      const campo = camposById.get(resp.id_campo);
+                      return (
+                        <div key={resp.id_resposta} className="text-xs bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-lg px-2.5 py-1.5">
+                          <p className="text-[10px] text-neutral-500 dark:text-neutral-400">{campo?.label || resp.id_campo}</p>
+                          <p className="font-semibold text-neutral-900 dark:text-white">{resp.valor}</p>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

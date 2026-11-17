@@ -138,6 +138,7 @@ export interface LeadEntity {
   empresa?: string;
   cargo?: string;
   local?: string; // Local / Campanha específica (ex: Escola, Bairro, Unidade)
+  aluno_ganhador?: string; // Nome completo do aluno ganhador vinculado ao lead/agendamento
   status_cliente?: StatusClienteLead; // 'LEAD' ou 'CLIENTE' (promovido automaticamente ao fechar venda)
   origem_primeiro_evento: string; // FK -> Evento
   total_agendamentos: number;
