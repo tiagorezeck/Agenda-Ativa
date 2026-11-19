@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { storage } from '../../services/storageService';
 import { isCloudActive } from '../../services/driveSyncService';
-import { BookingSubmissionPayload, BookingSuccessResult } from '../../types/api';
+import { BookingSubmissionPayload, BookingSuccessResult, WaitlistSuccessResult } from '../../types/api';
+import { EventoEntity } from '../../types/database';
 import {
   formatarDataBR,
   formatarMoedaBRL,
@@ -10,9 +11,7 @@ import {
   isTelefoneBRValido,
   sanitizarEmailInput,
   isEmailValido,
-  gerarLinkWhatsApp,
-  obterDiaSemanaAbrev,
-  DIAS_SEMANA_MAP
+  gerarLinkWhatsApp
 } from '../../utils/formatters';
 import {
   Calendar,
@@ -35,8 +34,10 @@ import {
   CalendarClock,
   X,
   Tag,
-  LogOut,
-  Loader2
+  Loader2,
+  BellRing,
+  LayoutGrid,
+  PauseCircle
 } from 'lucide-react';
 
 interface PublicBookingViewProps {
@@ -47,7 +48,72 @@ interface PublicBookingViewProps {
   onToggleTheme?: () => void;
 }
 
+interface SavedPublicBooking {
+  protocolo: string;
+  contato: string;
+  nome: string;
+  email: string;
+  whatsapp: string;
+  local?: string;
+  evento_nome: string;
+  slug_evento: string;
+  data: string;
+  hora_inicio: string;
+  hora_fim: string;
+  criado_em: string;
+}
+
+const SAVED_BOOKINGS_KEY = 'agenda_ativa_public_bookings_v1';
+const SAVED_LEAD_PROFILE_KEY = 'agenda_ativa_public_lead_profile_v1';
+
 const recentEventVisitTimestamps = new Map<string, number>();
+
+function readSavedPublicBookings(): SavedPublicBooking[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(SAVED_BOOKINGS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedPublicBookings(list: SavedPublicBooking[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SAVED_BOOKINGS_KEY, JSON.stringify(list.slice(0, 12)));
+  } catch {
+    // ignore
+  }
+}
+
+function readSavedLeadProfile(): { nome: string; whatsapp: string; email: string; local: string } {
+  if (typeof window === 'undefined') return { nome: '', whatsapp: '', email: '', local: '' };
+  try {
+    const raw = localStorage.getItem(SAVED_LEAD_PROFILE_KEY);
+    if (!raw) return { nome: '', whatsapp: '', email: '', local: '' };
+    const p = JSON.parse(raw);
+    return {
+      nome: typeof p?.nome === 'string' ? p.nome : '',
+      whatsapp: typeof p?.whatsapp === 'string' ? p.whatsapp : '',
+      email: typeof p?.email === 'string' ? p.email : '',
+      local: typeof p?.local === 'string' ? p.local : ''
+    };
+  } catch {
+    return { nome: '', whatsapp: '', email: '', local: '' };
+  }
+}
+
+function writeSavedLeadProfile(profile: { nome: string; whatsapp: string; email: string; local: string }) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(SAVED_LEAD_PROFILE_KEY, JSON.stringify(profile));
+  } catch {
+    // ignore
+  }
+}
 
 export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   initialSlug,
@@ -69,104 +135,66 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   const cloudConnected = isCloudActive();
   const eventos = db.eventos;
 
-  // Seleção de Evento
-  const [selectedSlug, setSelectedSlug] = useState<string>(
-    initialSlug || eventos[0]?.slug || ''
-  );
+  const [selectedSlug, setSelectedSlug] = useState<string>(initialSlug || '');
+  const [viewMode, setViewMode] = useState<'landing' | 'booking'>(() => {
+    if (initialThankYouClosed) return 'landing';
+    return initialSlug ? 'booking' : 'landing';
+  });
 
   useEffect(() => {
-    if (initialSlug !== undefined && initialSlug !== '' && initialSlug !== selectedSlug) {
-      setSelectedSlug(initialSlug);
-    } else if (!selectedSlug && !initialSlug && eventos.length > 0) {
-      setSelectedSlug(eventos[0].slug);
-    }
-  }, [initialSlug, eventos, selectedSlug]);
-
-  const handleChangeSelectedSlug = (nextSlug: string) => {
-    setSelectedSlug(nextSlug);
-    setEtapaAtual(1);
-    setDataSelecionada('');
-    setSlotSelecionado(null);
-    setLocalResposta('');
-    setLocalOutro('');
-    onSelectSlug?.(nextSlug);
-  };
-
-  const eventoAtual = useMemo(() => {
-    if (selectedSlug) {
-      const normalizedSlug = selectedSlug.trim().toLowerCase();
-      const match = eventos.find(
-        e => e.slug.toLowerCase() === normalizedSlug || e.id_evento.toLowerCase() === normalizedSlug
-      );
-      if (match) return match;
+    if (initialThankYouClosed) {
+      setViewMode('landing');
+      setSelectedSlug('');
+      return;
     }
     if (initialSlug) {
-      return null;
+      setSelectedSlug(initialSlug);
+      setViewMode('booking');
+    } else if (initialSlug === '') {
+      setSelectedSlug('');
+      setViewMode('landing');
     }
-    return eventos[0] || null;
-  }, [eventos, selectedSlug, initialSlug]);
+  }, [initialSlug, initialThankYouClosed]);
 
-  // Contabiliza visita no link público do evento (evita duplicidade em StrictMode/re-render)
-  useEffect(() => {
-    if (cloudState.bootstrapping || !eventoAtual?.id_evento || initialThankYouClosed) return;
-    const evId = eventoAtual.id_evento;
-    if (trackedVisitsInMountRef.current.has(evId)) return;
+  // Meus Agendamentos salvos localmente (para acompanhamento automático na Landing Page)
+  const [savedBookings, setSavedBookings] = useState<SavedPublicBooking[]>(() => readSavedPublicBookings());
 
-    const now = Date.now();
-    const lastTs = recentEventVisitTimestamps.get(evId) || 0;
-    trackedVisitsInMountRef.current.add(evId);
-    if (now - lastTs < 2500) return;
-
-    recentEventVisitTimestamps.set(evId, now);
-    storage.incrementEventoVisita(evId);
-  }, [cloudState.bootstrapping, eventoAtual?.id_evento, initialThankYouClosed]);
-
-  // Informações da Empresa (Cadastradas em Configurações)
-  const empresaNome = db.config.find(c => c.chave === 'EMPRESA_NOME')?.valor || 'Agenda Ativa';
-  const empresaLogo = db.config.find(c => c.chave === 'EMPRESA_LOGO')?.valor || '';
-  const empresaWhatsapp = db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '';
-  const empresaEmail = db.config.find(c => c.chave === 'EMPRESA_EMAIL')?.valor || '';
-  const empresaEndereco = db.config.find(c => c.chave === 'EMPRESA_ENDERECO')?.valor || '';
-  const empresaCnpj = db.config.find(c => c.chave === 'EMPRESA_CNPJ')?.valor || '';
-  const termosLgpd = db.config.find(c => c.chave === 'TERMOS_LGPD')?.valor || '';
-
-  const [logoErro, setLogoErro] = useState(false);
-  const [eventoImgErro, setEventoImgErro] = useState(false);
-
-  useEffect(() => {
-    setLogoErro(false);
-  }, [empresaLogo]);
-
-  useEffect(() => {
-    setEventoImgErro(false);
-  }, [eventoAtual?.imagem_url]);
+  const initialLeadProfile = useMemo(() => readSavedLeadProfile(), []);
 
   // Etapas do Agendamento: 1 (Dia) -> 2 (Horário) -> 3 (Perguntas)
   const [etapaAtual, setEtapaAtual] = useState<1 | 2 | 3>(1);
   const [dataSelecionada, setDataSelecionada] = useState<string>('');
   const [slotSelecionado, setSlotSelecionado] = useState<{ horaInicio: string; horaFim: string } | null>(null);
 
-  // Campos do Formulário
-  const [nome, setNome] = useState('');
-  const [whatsapp, setWhatsapp] = useState('');
-  const [email, setEmail] = useState('');
+  // Campos do Formulário de Agendamento
+  const [nome, setNome] = useState(initialLeadProfile.nome);
+  const [whatsapp, setWhatsapp] = useState(initialLeadProfile.whatsapp);
+  const [email, setEmail] = useState(initialLeadProfile.email);
   const [localResposta, setLocalResposta] = useState('');
   const [localOutro, setLocalOutro] = useState('');
   const [respostasCustom, setRespostasCustom] = useState<Record<string, string>>({});
   const [lgpdAceito, setLgpdAceito] = useState(true);
 
-  // Estado de Submissão, Agradecimento (10s) e Encerramento
+  // Submissão & Página de Agradecimento (transição automática para a Landing Page)
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [erroMsg, setErroMsg] = useState<string | null>(null);
   const [resultadoSucesso, setResultadoSucesso] = useState<BookingSuccessResult | null>(null);
-  const [thankYouSecondsLeft, setThankYouSecondsLeft] = useState<number>(10);
-  const [thankYouExited, setThankYouExited] = useState<boolean>(initialThankYouClosed);
+  const [thankYouSecondsLeft, setThankYouSecondsLeft] = useState<number>(8);
 
-  useEffect(() => {
-    if (initialThankYouClosed) {
-      setThankYouExited(true);
-    }
-  }, [initialThankYouClosed]);
+  // Filtro da Landing Page Pública
+  const [landingFilter, setLandingFilter] = useState<'TODOS' | 'DISPONIVEIS' | 'INDISPONIVEIS'>('TODOS');
+  const [catalogImgErrors, setCatalogImgErrors] = useState<Record<string, boolean>>({});
+
+  // Modal de Evento Indisponível + Cadastro na Lista de Espera
+  const [waitlistEvent, setWaitlistEvent] = useState<EventoEntity | null>(null);
+  const [wlNome, setWlNome] = useState(initialLeadProfile.nome);
+  const [wlWhatsapp, setWlWhatsapp] = useState(initialLeadProfile.whatsapp);
+  const [wlEmail, setWlEmail] = useState(initialLeadProfile.email);
+  const [wlLocal, setWlLocal] = useState(initialLeadProfile.local);
+  const [wlObservacao, setWlObservacao] = useState('');
+  const [wlSubmitting, setWlSubmitting] = useState(false);
+  const [wlErro, setWlErro] = useState<string | null>(null);
+  const [wlSucesso, setWlSucesso] = useState<WaitlistSuccessResult | null>(null);
 
   // Autoatendimento por Protocolo (Consultar / Cancelar / Remarcar)
   const [selfServiceOpen, setSelfServiceOpen] = useState(false);
@@ -179,142 +207,137 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   const [ssRemarcarData, setSsRemarcarData] = useState('');
   const [ssRemarcarSlot, setSsRemarcarSlot] = useState<{ horaInicio: string; horaFim: string } | null>(null);
 
+  const eventoAtual = useMemo(() => {
+    if (!selectedSlug) return null;
+    const normalizedSlug = selectedSlug.trim().toLowerCase();
+    return (
+      eventos.find(
+        (e) => e.slug.toLowerCase() === normalizedSlug || e.id_evento.toLowerCase() === normalizedSlug
+      ) || null
+    );
+  }, [eventos, selectedSlug]);
+
+  const resumoEventoAtual = useMemo(() => {
+    if (!eventoAtual) return null;
+    return storage.getEventoDisponibilidadeResumo(eventoAtual);
+  }, [eventoAtual, db.agendamentos, db.horarios, db.bloqueios]);
+
+  // Contabiliza visita no link público quando abre diretamente um evento em modo booking
+  useEffect(() => {
+    if (cloudState.bootstrapping || viewMode !== 'booking' || !eventoAtual?.id_evento) return;
+    const evId = eventoAtual.id_evento;
+    if (trackedVisitsInMountRef.current.has(evId)) return;
+
+    const now = Date.now();
+    const lastTs = recentEventVisitTimestamps.get(evId) || 0;
+    trackedVisitsInMountRef.current.add(evId);
+    if (now - lastTs < 2500) return;
+
+    recentEventVisitTimestamps.set(evId, now);
+    storage.incrementEventoVisita(evId);
+  }, [cloudState.bootstrapping, viewMode, eventoAtual?.id_evento]);
+
+  // Informações da Empresa
+  const empresaNome = db.config.find((c) => c.chave === 'EMPRESA_NOME')?.valor || 'Agenda Ativa';
+  const empresaLogo = db.config.find((c) => c.chave === 'EMPRESA_LOGO')?.valor || '';
+  const empresaWhatsapp = db.config.find((c) => c.chave === 'WHATSAPP_CONTATO')?.valor || '';
+  const empresaEmail = db.config.find((c) => c.chave === 'EMPRESA_EMAIL')?.valor || '';
+  const empresaEndereco = db.config.find((c) => c.chave === 'EMPRESA_ENDERECO')?.valor || '';
+  const empresaCnpj = db.config.find((c) => c.chave === 'EMPRESA_CNPJ')?.valor || '';
+  const termosLgpd = db.config.find((c) => c.chave === 'TERMOS_LGPD')?.valor || '';
+
+  const [logoErro, setLogoErro] = useState(false);
+  const [eventoImgErro, setEventoImgErro] = useState(false);
+
+  useEffect(() => {
+    setLogoErro(false);
+  }, [empresaLogo]);
+
+  useEffect(() => {
+    setEventoImgErro(false);
+  }, [eventoAtual?.imagem_url]);
+
+  const handleOpenEventBooking = (slug: string) => {
+    const targetEv = eventos.find((e) => e.slug === slug || e.id_evento === slug);
+    if (targetEv) {
+      const res = storage.getEventoDisponibilidadeResumo(targetEv);
+      if (!res.disponivel && viewMode === 'landing') {
+        handleOpenUnavailableModal(targetEv);
+        return;
+      }
+    }
+    setSelectedSlug(slug);
+    setViewMode('booking');
+    setEtapaAtual(1);
+    setDataSelecionada('');
+    setSlotSelecionado(null);
+    setLocalResposta('');
+    setLocalOutro('');
+    setErroMsg(null);
+    onSelectSlug?.(slug);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleEnterLandingPage = () => {
+    setResultadoSucesso(null);
+    setDataSelecionada('');
+    setSlotSelecionado(null);
+    setEtapaAtual(1);
+    setLocalResposta('');
+    setLocalOutro('');
+    setRespostasCustom({});
+    setErroMsg(null);
+    setSelectedSlug('');
+    setViewMode('landing');
+    onSelectSlug?.('');
+    if (typeof window !== 'undefined') {
+      window.history.replaceState({}, '', `/agendar${window.location.search}`);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const handleOpenUnavailableModal = (ev: EventoEntity) => {
+    const profile = readSavedLeadProfile();
+    setWlNome((prev) => prev || nome || profile.nome);
+    setWlWhatsapp((prev) => prev || whatsapp || profile.whatsapp);
+    setWlEmail((prev) => prev || email || profile.email);
+    setWlLocal((prev) => prev || profile.local);
+    setWlObservacao('');
+    setWlErro(null);
+    setWlSucesso(null);
+    setWaitlistEvent(ev);
+  };
+
   // Campos Dinâmicos do Evento
   const camposDoEvento = useMemo(() => {
     if (!eventoAtual) return [];
     return db.campos_formulario
-      .filter(c => c.id_evento === eventoAtual.id_evento && c.ativo)
+      .filter((c) => c.id_evento === eventoAtual.id_evento && c.ativo)
       .sort((a, b) => a.ordem - b.ordem);
   }, [eventoAtual, db.campos_formulario]);
 
-  // Helper de data local (evita desvio de fuso UTC em horários noturnos)
-  const toLocalIsoDate = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-
-  // Lista de datas disponíveis respeitando Recorrência Semanal, Datas Específicas ou Período Fechado
   const proximasDatas = useMemo(() => {
     if (!eventoAtual) return [];
-    const list: { dataIso: string; diaSemana: string; rotulo: string }[] = [];
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-    const hojeIso = toLocalIsoDate(hoje);
-    const amanha = new Date(hoje);
-    amanha.setDate(hoje.getDate() + 1);
-    const amanhaIso = toLocalIsoDate(amanha);
-
-    const modo = eventoAtual.modo_datas || (eventoAtual.recorrencia_ativa ? 'TOTAL' : 'SEMANAL');
-    const diasPermitidos = Array.isArray(eventoAtual.dias_semana) && eventoAtual.dias_semana.length > 0
-      ? eventoAtual.dias_semana
-      : ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
-
-    const baseDateStr = eventoAtual.data_inicio || hojeIso;
-    const baseDate = new Date(baseDateStr + 'T00:00:00');
-
-    if (modo === 'DATAS_ESPECIFICAS') {
-      const especificas = Array.isArray(eventoAtual.datas_especificas)
-        ? [...eventoAtual.datas_especificas].filter(iso => iso >= hojeIso).sort()
-        : [];
-      for (const iso of especificas) {
-        const abrev = obterDiaSemanaAbrev(iso);
-        let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
-        if (iso === hojeIso) rotulo = 'Hoje';
-        else if (iso === amanhaIso) rotulo = 'Amanhã';
-        list.push({ dataIso: iso, diaSemana: abrev, rotulo });
-      }
-      return list;
-    }
-
-    if (modo === 'SEMANAL') {
-      const dayOfWeek = baseDate.getDay();
-      const diffToMon = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-      const monday = new Date(baseDate);
-      monday.setDate(baseDate.getDate() + diffToMon);
-
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(monday);
-        d.setDate(monday.getDate() + i);
-        const iso = toLocalIsoDate(d);
-        if (iso < hojeIso) continue;
-        const abrev = obterDiaSemanaAbrev(iso);
-        if (!diasPermitidos.includes(abrev)) continue;
-
-        let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
-        if (iso === hojeIso) rotulo = 'Hoje';
-        else if (iso === amanhaIso) rotulo = 'Amanhã';
-
-        list.push({ dataIso: iso, diaSemana: abrev, rotulo });
-      }
-      return list;
-    }
-
-    if (modo === 'MENSAL') {
-      const year = baseDate.getFullYear();
-      const month = baseDate.getMonth();
-      const firstDay = new Date(year, month, 1);
-      const lastDay = new Date(year, month + 1, 0);
-
-      const curr = new Date(firstDay);
-      while (curr <= lastDay && list.length < 35) {
-        const iso = toLocalIsoDate(curr);
-        if (iso >= hojeIso) {
-          const abrev = obterDiaSemanaAbrev(iso);
-          if (diasPermitidos.includes(abrev)) {
-            let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
-            if (iso === hojeIso) rotulo = 'Hoje';
-            else if (iso === amanhaIso) rotulo = 'Amanhã';
-            list.push({ dataIso: iso, diaSemana: abrev, rotulo });
-          }
-        }
-        curr.setDate(curr.getDate() + 1);
-      }
-      return list;
-    }
-
-    // TOTAL, RECORRENTE ou PERIODO
-    const inicioStr = eventoAtual.data_inicio && eventoAtual.data_inicio > hojeIso
-      ? eventoAtual.data_inicio
-      : hojeIso;
-    const isPer = modo === 'PERIODO';
-    const fimStr = isPer ? (eventoAtual.data_fim || '') : '';
-
-    for (let i = 0; i < 120; i++) {
-      const d = new Date(hoje);
-      d.setDate(hoje.getDate() + i);
-      const iso = toLocalIsoDate(d);
-
-      if (iso < inicioStr) continue;
-      if (fimStr && iso > fimStr) break;
-
-      const abrev = obterDiaSemanaAbrev(iso);
-      if (!diasPermitidos.includes(abrev)) continue;
-
-      let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
-      if (iso === hojeIso) rotulo = 'Hoje';
-      else if (iso === amanhaIso) rotulo = 'Amanhã';
-
-      list.push({ dataIso: iso, diaSemana: abrev, rotulo });
-      if (list.length >= 28) break;
-    }
-    return list;
+    return storage.getEventoProximasDatas(eventoAtual);
   }, [eventoAtual]);
 
-  // Slots em tempo real para a data selecionada
   const slotsDaData = useMemo(() => {
     if (!eventoAtual || !dataSelecionada) return [];
     return storage.getDisponibilidade(eventoAtual.id_evento, dataSelecionada);
-  }, [eventoAtual, dataSelecionada, resultadoSucesso, ssSucesso]);
+  }, [eventoAtual, dataSelecionada, resultadoSucesso, ssSucesso, db.agendamentos, db.bloqueios]);
 
-  // Slots disponíveis para remarcação por protocolo
+  const ssDatasRemarcacao = useMemo(() => {
+    if (!ssResultado) return [];
+    return storage.getEventoProximasDatas(ssResultado.evento);
+  }, [ssResultado]);
+
   const ssSlotsRemarcacao = useMemo(() => {
     if (!ssResultado || !ssRemarcarData) return [];
     return storage.getDisponibilidade(ssResultado.evento.id_evento, ssRemarcarData);
   }, [ssResultado, ssRemarcarData, ssSucesso]);
 
-  // Handler ao selecionar dia: salva e abre horários
   const handleSelectData = (iso: string) => {
     setDataSelecionada(iso);
     setSlotSelecionado(null);
@@ -322,7 +345,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     setErroMsg(null);
   };
 
-  // Handler ao selecionar horário: salva e abre formulário
   const handleSelectSlot = (slot: { horaInicio: string; horaFim: string }) => {
     setSlotSelecionado(slot);
     setEtapaAtual(3);
@@ -330,7 +352,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
   };
 
   const handleCustomChange = (campoId: string, val: string) => {
-    setRespostasCustom(prev => ({ ...prev, [campoId]: val }));
+    setRespostasCustom((prev) => ({ ...prev, [campoId]: val }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -396,8 +418,41 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       };
 
       const result = await storage.createBookingWithCloud(payload);
-      setThankYouExited(false);
-      setThankYouSecondsLeft(10);
+
+      const newSavedItem: SavedPublicBooking = {
+        protocolo: result.protocolo,
+        contato: whatsapp.trim(),
+        nome: nome.trim(),
+        email: email.trim().toLowerCase(),
+        whatsapp: whatsapp.trim(),
+        local: valorLocalFinal,
+        evento_nome: result.evento_nome,
+        slug_evento: eventoAtual.slug,
+        data: result.data,
+        hora_inicio: result.hora_inicio,
+        hora_fim: result.hora_fim,
+        criado_em: new Date().toISOString()
+      };
+      const updatedBookings = [
+        newSavedItem,
+        ...savedBookings.filter((b) => b.protocolo !== newSavedItem.protocolo)
+      ];
+      setSavedBookings(updatedBookings);
+      writeSavedPublicBookings(updatedBookings);
+
+      const profileToSave = {
+        nome: nome.trim(),
+        whatsapp: whatsapp.trim(),
+        email: email.trim().toLowerCase(),
+        local: valorLocalFinal
+      };
+      writeSavedLeadProfile(profileToSave);
+      setWlNome(profileToSave.nome);
+      setWlWhatsapp(profileToSave.whatsapp);
+      setWlEmail(profileToSave.email);
+      setWlLocal(profileToSave.local);
+
+      setThankYouSecondsLeft(8);
       setResultadoSucesso(result);
       window.history.replaceState(
         {},
@@ -411,38 +466,77 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
   };
 
-  const handleConcluirESair = () => {
-    setResultadoSucesso(null);
-    setDataSelecionada('');
-    setSlotSelecionado(null);
-    setEtapaAtual(1);
-    setNome('');
-    setWhatsapp('');
-    setEmail('');
-    setLocalResposta('');
-    setLocalOutro('');
-    setRespostasCustom({});
-    setErroMsg(null);
-    setThankYouExited(true);
-    window.history.replaceState({}, '', '/obrigado');
-    try {
-      window.close();
-    } catch {
-      // Navegadores podem bloquear window.close() se a aba não foi aberta externamente
-    }
-  };
-
+  // Transição automática da tela de agradecimento para a Landing Page Pública
   useEffect(() => {
-    if (!resultadoSucesso || thankYouExited) return;
+    if (!resultadoSucesso) return;
     if (thankYouSecondsLeft <= 0) {
-      handleConcluirESair();
+      handleEnterLandingPage();
       return;
     }
     const timer = window.setTimeout(() => {
       setThankYouSecondsLeft((prev) => Math.max(0, prev - 1));
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [resultadoSucesso, thankYouExited, thankYouSecondsLeft]);
+  }, [resultadoSucesso, thankYouSecondsLeft]);
+
+  const handleSubmitWaitlist = async (e: React.FormEvent, targetEvento: EventoEntity) => {
+    e.preventDefault();
+    if (!wlNome.trim() || !wlWhatsapp.trim()) {
+      setWlErro('Preencha seu Nome Completo e WhatsApp com DDD.');
+      return;
+    }
+    if (!isTelefoneBRValido(wlWhatsapp)) {
+      setWlErro('Informe um WhatsApp válido com DDD no padrão (XX) XXXXX-XXXX.');
+      return;
+    }
+    if (wlEmail.trim() && !isEmailValido(wlEmail)) {
+      setWlErro('Informe um e-mail válido contendo @.');
+      return;
+    }
+
+    setWlErro(null);
+    setWlSubmitting(true);
+    try {
+      const targetResumo = storage.getEventoDisponibilidadeResumo(targetEvento);
+      const res = await storage.createWaitlistWithCloud({
+        slug_evento: targetEvento.slug || targetEvento.id_evento,
+        nome: wlNome.trim(),
+        whatsapp: wlWhatsapp.trim(),
+        email: wlEmail.trim().toLowerCase(),
+        local: wlLocal.trim() || undefined,
+        motivo: targetResumo.tituloStatus,
+        observacoes: wlObservacao.trim() || undefined
+      });
+      writeSavedLeadProfile({
+        nome: wlNome.trim(),
+        whatsapp: wlWhatsapp.trim(),
+        email: wlEmail.trim().toLowerCase(),
+        local: wlLocal.trim()
+      });
+      setWlSucesso(res);
+    } catch (err: any) {
+      setWlErro(err.message || 'Não foi possível registrar seu interesse no momento.');
+    } finally {
+      setWlSubmitting(false);
+    }
+  };
+
+  const openTrackingForSavedBooking = (item: SavedPublicBooking) => {
+    setSsProtocolo(item.protocolo);
+    setSsContato(item.contato || item.whatsapp || item.email);
+    setSsErro(null);
+    setSsSucesso(null);
+    setSsRemarcarData('');
+    setSsRemarcarSlot(null);
+    setSelfServiceOpen(true);
+    try {
+      const found = storage.findBookingByProtocol(item.protocolo, item.contato || item.whatsapp || item.email);
+      setSsResultado(found);
+    } catch (err: any) {
+      setSsResultado(null);
+      setSsErro(err.message || 'Não foi possível localizar nos dados atuais.');
+    }
+  };
 
   const handleBuscarProtocolo = (e: React.FormEvent) => {
     e.preventDefault();
@@ -453,6 +547,26 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     try {
       const found = storage.findBookingByProtocol(ssProtocolo, ssContato);
       setSsResultado(found);
+      const savedEntry: SavedPublicBooking = {
+        protocolo: found.agendamento.protocolo,
+        contato: ssContato,
+        nome: found.lead.nome,
+        email: found.lead.email || '',
+        whatsapp: found.lead.whatsapp || '',
+        local: found.lead.local,
+        evento_nome: found.evento.nome,
+        slug_evento: found.evento.slug,
+        data: found.agendamento.data_agendamento,
+        hora_inicio: found.agendamento.hora_inicio,
+        hora_fim: found.agendamento.hora_fim,
+        criado_em: found.agendamento.criado_em
+      };
+      const updated = [
+        savedEntry,
+        ...savedBookings.filter((b) => b.protocolo !== savedEntry.protocolo)
+      ];
+      setSavedBookings(updated);
+      writeSavedPublicBookings(updated);
     } catch (err: any) {
       setSsResultado(null);
       setSsErro(err.message || 'Agendamento não encontrado.');
@@ -491,6 +605,18 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
       );
       const updated = storage.findBookingByProtocol(ssProtocolo, ssContato);
       setSsResultado(updated);
+      const nextSaved = savedBookings.map((b) =>
+        b.protocolo === updated.agendamento.protocolo
+          ? {
+              ...b,
+              data: updated.agendamento.data_agendamento,
+              hora_inicio: updated.agendamento.hora_inicio,
+              hora_fim: updated.agendamento.hora_fim
+            }
+          : b
+      );
+      setSavedBookings(nextSaved);
+      writeSavedPublicBookings(nextSaved);
       setSsRemarcarData('');
       setSsRemarcarSlot(null);
       setSsSucesso(
@@ -503,53 +629,35 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     }
   };
 
-  // --- TELA FINAL APÓS SAIR (SESSÃO ENCERRADA, SEM ACESSO AO SISTEMA) ---
-  if (thankYouExited) {
-    return (
-      <div className="min-h-screen bg-neutral-100 dark:bg-neutral-950 py-6 sm:py-12 px-4 sm:px-6 flex items-center justify-center text-neutral-900 dark:text-neutral-100 transition-colors">
-        <div className="max-w-md w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-sm space-y-5 text-center">
-          <div className="w-14 h-14 rounded-full bg-emerald-500/10 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
-            <ShieldCheck className="w-8 h-8" />
-          </div>
+  // --- CATÁLOGO DE EVENTOS PARA A LANDING PAGE ---
+  const eventosCatalogo = useMemo(() => {
+    return eventos
+      .filter((ev) => ev.status !== 'RASCUNHO')
+      .map((ev) => ({
+        evento: ev,
+        resumo: storage.getEventoDisponibilidadeResumo(ev)
+      }));
+  }, [eventos, db.agendamentos, db.horarios, db.bloqueios]);
 
-          <div className="space-y-2">
-            <h1 className="text-xl font-bold tracking-tight text-neutral-900 dark:text-white">
-              Obrigado pelo seu agendamento!
-            </h1>
-            <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
-              Seu atendimento foi registrado com sucesso e esta página foi encerrada com segurança. Você já pode fechar esta guia.
-            </p>
-          </div>
+  const eventosFiltrados = useMemo(() => {
+    if (landingFilter === 'DISPONIVEIS') {
+      return eventosCatalogo.filter((item) => item.resumo.disponivel);
+    }
+    if (landingFilter === 'INDISPONIVEIS') {
+      return eventosCatalogo.filter((item) => !item.resumo.disponivel);
+    }
+    return eventosCatalogo;
+  }, [eventosCatalogo, landingFilter]);
 
-          <button
-            type="button"
-            onClick={() => {
-              try {
-                window.close();
-              } catch {
-                // Sem ação adicional se navegador bloquear fechamento automático
-              }
-            }}
-            className="w-full py-3 px-4 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Fechar esta página</span>
-          </button>
+  const countDisponiveis = eventosCatalogo.filter((i) => i.resumo.disponivel).length;
+  const countIndisponiveis = eventosCatalogo.length - countDisponiveis;
 
-          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 leading-relaxed">
-            {empresaNome} · Sessão independente encerrada. Caso o navegador não feche a guia automaticamente, basta fechá-la manualmente.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // --- PÁGINA DE AGRADECIMENTO COM SAÍDA AUTOMÁTICA EM 10 SEGUNDOS ---
+  // --- PÁGINA DE AGRADECIMENTO & PROTOCOLO -> ENTRA NA LANDING PAGE ---
   if (resultadoSucesso) {
     const primeiroNome = nome.trim().split(/\s+/)[0] || 'Cliente';
-    const progressPercent = Math.max(0, Math.min(100, (thankYouSecondsLeft / 10) * 100));
+    const progressPercent = Math.max(0, Math.min(100, (thankYouSecondsLeft / 8) * 100));
     const linkWhatsAppConfirmacao = gerarLinkWhatsApp(
-      db.config.find(c => c.chave === 'WHATSAPP_CONTATO')?.valor || '5511999998888',
+      empresaWhatsapp || '5511999998888',
       `Olá! Meu nome é *${nome}* e acabei de confirmar meu agendamento para o evento *${resultadoSucesso.evento_nome}* no dia *${formatarDataBR(resultadoSucesso.data)}* às *${resultadoSucesso.hora_inicio}*.\n\nMeu Protocolo é: *${resultadoSucesso.protocolo}*.`
     );
 
@@ -565,7 +673,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
               Obrigado pelo seu agendamento, {primeiroNome}!
             </h2>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              Sua vaga foi reservada com sucesso. Guarde o protocolo abaixo para referência.
+              Sua vaga foi reservada com sucesso. Guarde o protocolo abaixo para acompanhar ou alterar seu atendimento na Landing Page.
             </p>
           </div>
 
@@ -597,7 +705,9 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             </div>
             <div className="flex items-center justify-between gap-2">
               <span className="text-neutral-500 dark:text-neutral-400 shrink-0">WhatsApp:</span>
-              <span className="font-mono tabular-nums text-neutral-900 dark:text-white">{formatarTelefoneBR(whatsapp)}</span>
+              <span className="font-mono tabular-nums text-neutral-900 dark:text-white">
+                {formatarTelefoneBR(whatsapp)}
+              </span>
             </div>
             {(localResposta === '__OUTRO__' ? localOutro.trim() : localResposta.trim()) && (
               <div className="flex items-center justify-between gap-2">
@@ -617,7 +727,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
           <div className="space-y-2 pt-1">
             <div className="flex items-center justify-between text-xs">
               <span className="text-neutral-600 dark:text-neutral-400">
-                Saindo automaticamente em:
+                Entrando no portal de eventos e acompanhamentos em:
               </span>
               <span className="font-mono tabular-nums font-bold text-orange-600 dark:text-orange-400">
                 {thankYouSecondsLeft}s
@@ -625,40 +735,40 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             </div>
             <div className="w-full h-1.5 bg-neutral-200 dark:bg-neutral-800 rounded-full overflow-hidden">
               <div
-                className="h-full bg-emerald-500 transition-all duration-1000 ease-linear"
+                className="h-full bg-orange-500 transition-all duration-1000 ease-linear"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
           </div>
 
           <div className="space-y-2.5 pt-1">
+            <button
+              type="button"
+              onClick={handleEnterLandingPage}
+              className="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+            >
+              <span>Acompanhar Meu Agendamento e Ver Eventos</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+
             {empresaWhatsapp && (
               <a
                 href={linkWhatsAppConfirmacao}
                 target="_blank"
                 rel="noreferrer"
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
+                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
               >
                 <Share2 className="w-4 h-4" />
                 <span>Enviar Comprovante pelo WhatsApp</span>
               </a>
             )}
-
-            <button
-              type="button"
-              onClick={handleConcluirESair}
-              className="w-full py-2.5 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-200 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Concluir e Sair Agora</span>
-            </button>
           </div>
         </div>
       </div>
     );
   }
 
-  // --- TELA INICIAL DE CARREGAMENTO (ANTES DE EXIBIR OS DADOS DO EVENTO) ---
+  // --- TELA INICIAL DE CARREGAMENTO ---
   const isInitialLoading =
     cloudState.bootstrapping ||
     (cloudConnected && !cloudState.loadedFromCloud && !cloudState.lastError);
@@ -673,10 +783,10 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
 
           <div className="space-y-1.5">
             <h1 className="text-base sm:text-lg font-bold tracking-tight text-neutral-900 dark:text-white">
-              Carregando agenda do evento
+              Carregando portal de eventos
             </h1>
             <p className="text-xs text-neutral-500 dark:text-neutral-400 leading-relaxed">
-              Buscando datas, horários e vagas disponíveis em tempo real...
+              Buscando agendas, vagas e eventos disponíveis em tempo real...
             </p>
           </div>
         </div>
@@ -684,12 +794,16 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
     );
   }
 
-  // --- FLUXO PRINCIPAL: TELA ÚNICA SEM ROLAGEM NO NOTEBOOK E TABLET, RESPONSIVO NO MOBILE ---
-  return (
-    <div className="min-h-screen md:h-screen md:overflow-hidden bg-neutral-100 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex flex-col transition-colors">
-      {/* Top Bar Limpa e Compacta (3 zonas: Marca / Ações) */}
-      <header className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-4 shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
+  // --- RENDERIZAÇÃO DO TOPO COMUM (3 ZONAS LIMPAS) ---
+  const renderTopBar = () => (
+    <header className="w-full bg-white/80 dark:bg-neutral-900/80 backdrop-blur-md border-b border-neutral-200 dark:border-neutral-800 sticky top-0 z-30 shrink-0">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-6">
+        {/* Marca */}
+        <button
+          type="button"
+          onClick={handleEnterLandingPage}
+          className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer"
+        >
           {empresaLogo && !logoErro ? (
             <img
               src={empresaLogo}
@@ -707,23 +821,48 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
           <span className="text-sm font-bold tracking-tight text-neutral-900 dark:text-white whitespace-nowrap truncate">
             {empresaNome}
           </span>
+        </button>
 
-          {!initialSlug && eventos.length > 1 && (
-            <select
-              value={selectedSlug}
-              onChange={(e) => handleChangeSelectedSlug(e.target.value)}
-              className="ml-2 px-2.5 py-1.5 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-800 rounded-lg text-xs text-neutral-800 dark:text-neutral-200 max-w-[160px] sm:max-w-[220px] truncate focus:outline-none focus:border-orange-500"
-            >
-              {eventos.map(ev => (
-                <option key={ev.slug} value={ev.slug}>
-                  {ev.nome}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+        {/* Navegação Central */}
+        <nav className="hidden md:flex items-center gap-8 text-xs font-medium text-neutral-600 dark:text-neutral-300">
+          <button
+            type="button"
+            onClick={handleEnterLandingPage}
+            className={`whitespace-nowrap transition-colors cursor-pointer ${
+              viewMode === 'landing'
+                ? 'text-orange-600 dark:text-orange-400 font-semibold'
+                : 'hover:text-neutral-900 dark:hover:text-white'
+            }`}
+          >
+            Eventos Abertos
+          </button>
+          <a
+            href="#meus-agendamentos"
+            onClick={(e) => {
+              if (viewMode !== 'landing') {
+                e.preventDefault();
+                setSelfServiceOpen(true);
+              }
+            }}
+            className="whitespace-nowrap hover:text-neutral-900 dark:hover:text-white transition-colors"
+          >
+            Acompanhar Protocolo
+          </a>
+        </nav>
 
+        {/* Ações */}
         <div className="flex items-center gap-2 shrink-0">
+          {viewMode === 'booking' && (
+            <button
+              type="button"
+              onClick={handleEnterLandingPage}
+              className="px-3 py-2 bg-neutral-100 hover:bg-neutral-200 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <LayoutGrid className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+              <span className="hidden sm:inline">Todos os Eventos</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => {
@@ -758,10 +897,726 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             </button>
           )}
         </div>
-      </header>
+      </div>
+    </header>
+  );
 
-      {/* Área Central Principal (Largura Ampla Notebook + Tablet em Tela Única) */}
-      <main className="flex-1 min-h-0 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-3 md:pb-4 flex flex-col">
+  // =========================================================================
+  // MODO 1: LANDING PAGE PÚBLICA (ACOMPANHAMENTO + EVENTOS DISPONÍVEIS / ESPERA)
+  // =========================================================================
+  if (viewMode === 'landing') {
+    return (
+      <div className="min-h-screen bg-neutral-100 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex flex-col transition-colors">
+        {renderTopBar()}
+
+        <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8">
+          {/* Hero Editorial Compacto */}
+          <section className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-6 sm:p-8 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div className="space-y-2 max-w-2xl">
+              <p className="text-xs font-semibold text-orange-600 dark:text-orange-400">
+                Portal Público de Atendimentos · {empresaNome}
+              </p>
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-neutral-900 dark:text-white text-balance">
+                Acompanhe seu agendamento e escolha novos eventos
+              </h1>
+              <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                Consulte o status do seu protocolo em tempo real, remarque ou cancele quando precisar e inscreva-se nos demais eventos abertos ou na lista de espera.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelfServiceOpen(true);
+                  setSsErro(null);
+                  setSsSucesso(null);
+                }}
+                className="px-4 py-2.5 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer"
+              >
+                <Search className="w-3.5 h-3.5 text-orange-400" />
+                <span>Consultar Protocolo</span>
+              </button>
+
+              {empresaWhatsapp && (
+                <a
+                  href={gerarLinkWhatsApp(empresaWhatsapp, `Olá! Preciso de atendimento sobre um evento (${empresaNome}).`)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Falar no WhatsApp</span>
+                </a>
+              )}
+            </div>
+          </section>
+
+          {/* Seção: Meus Agendamentos (Acompanhamento Automático + Busca por Protocolo) */}
+          <section id="meus-agendamentos" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold tracking-tight text-neutral-900 dark:text-white">
+                  Meus Agendamentos
+                </h2>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Acompanhe suas reservas realizadas neste dispositivo ou consulte outro código de protocolo.
+                </p>
+              </div>
+            </div>
+
+            {savedBookings.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {savedBookings.map((item) => {
+                  const liveAgd = db.agendamentos.find(
+                    (a) => a.protocolo.toUpperCase() === item.protocolo.toUpperCase()
+                  );
+                  const liveStatus = liveAgd?.status || 'CONFIRMADO';
+                  const dataExibida = liveAgd?.data_agendamento || item.data;
+                  const horaExibida = liveAgd?.hora_inicio || item.hora_inicio;
+
+                  const statusLabel =
+                    liveStatus === 'CANCELADO'
+                      ? 'Cancelado'
+                      : liveStatus === 'REALIZADO'
+                      ? 'Realizado'
+                      : liveStatus === 'NO_SHOW'
+                      ? 'Não compareceu'
+                      : 'Confirmado';
+
+                  const statusColor =
+                    liveStatus === 'CANCELADO'
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : liveStatus === 'REALIZADO'
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : 'text-emerald-600 dark:text-emerald-400';
+
+                  return (
+                    <div
+                      key={item.protocolo}
+                      className="p-5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                    >
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-mono font-bold text-orange-600 dark:text-orange-400">
+                            {item.protocolo}
+                          </span>
+                          <span aria-hidden="true" className="text-neutral-400">·</span>
+                          <span className={`font-semibold ${statusColor}`}>
+                            {statusLabel}
+                          </span>
+                        </div>
+
+                        <h3 className="text-sm sm:text-base font-bold text-neutral-900 dark:text-white truncate">
+                          {item.evento_nome}
+                        </h3>
+
+                        <p className="text-xs text-neutral-600 dark:text-neutral-400 font-mono tabular-nums">
+                          {formatarDataBR(dataExibida)} às {horaExibida}
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => openTrackingForSavedBooking(item)}
+                        className="px-3.5 py-2 bg-neutral-100 hover:bg-orange-600 text-neutral-800 hover:text-white dark:bg-neutral-800 dark:hover:bg-orange-600 dark:text-neutral-200 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        Acompanhar / Alterar
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="p-5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-950/50 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0">
+                    <CalendarClock className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-xs sm:text-sm font-semibold text-neutral-900 dark:text-white">
+                      Você ainda não possui agendamentos recentes salvos neste navegador
+                    </p>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                      Se já fez um agendamento em outro dispositivo, consulte usando seu código de protocolo.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelfServiceOpen(true);
+                    setSsErro(null);
+                    setSsSucesso(null);
+                  }}
+                  className="px-4 py-2 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  Buscar por Protocolo
+                </button>
+              </div>
+            )}
+          </section>
+
+          {/* Seção: Catálogo de Eventos Abertos e Indisponíveis */}
+          <section className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold tracking-tight text-neutral-900 dark:text-white">
+                  Eventos Disponíveis &amp; Próximas Turmas
+                </h2>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Inscreva-se nos eventos com agenda aberta ou deixe seu contato na lista de espera dos encerrados e pausados.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 p-1 rounded-xl shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setLandingFilter('TODOS')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    landingFilter === 'TODOS'
+                      ? 'bg-orange-600 text-white font-semibold'
+                      : 'text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white'
+                  }`}
+                >
+                  Todos ({eventosCatalogo.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLandingFilter('DISPONIVEIS')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    landingFilter === 'DISPONIVEIS'
+                      ? 'bg-orange-600 text-white font-semibold'
+                      : 'text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white'
+                  }`}
+                >
+                  Abertos ({countDisponiveis})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLandingFilter('INDISPONIVEIS')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    landingFilter === 'INDISPONIVEIS'
+                      ? 'bg-orange-600 text-white font-semibold'
+                      : 'text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white'
+                  }`}
+                >
+                  Lista de Espera ({countIndisponiveis})
+                </button>
+              </div>
+            </div>
+
+            {eventosFiltrados.length === 0 ? (
+              <div className="p-10 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl text-center space-y-2">
+                <Calendar className="w-8 h-8 text-neutral-400 mx-auto" />
+                <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Nenhum evento encontrado neste filtro
+                </p>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Alterne para &quot;Todos&quot; ou entre em contato pelos nossos canais de atendimento.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                {eventosFiltrados.map(({ evento: ev, resumo }) => {
+                  const hasImg = Boolean(ev.imagem_url) && !catalogImgErrors[ev.id_evento];
+
+                  return (
+                    <article
+                      key={ev.id_evento}
+                      className="p-5 sm:p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-sm flex flex-col justify-between gap-5"
+                    >
+                      <div className="space-y-3.5">
+                        {/* Identidade */}
+                        <div className="flex items-start gap-3.5">
+                          {hasImg ? (
+                            <img
+                              src={ev.imagem_url}
+                              alt={ev.nome}
+                              referrerPolicy="no-referrer"
+                              onError={() => setCatalogImgErrors((p) => ({ ...p, [ev.id_evento]: true }))}
+                              className="w-12 h-12 rounded-xl object-cover border border-neutral-200 dark:border-neutral-800 shrink-0 bg-neutral-50 dark:bg-neutral-950"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-xl bg-orange-600 text-white font-bold text-lg flex items-center justify-center shrink-0">
+                              {ev.nome.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <p className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+                              <span
+                                className={
+                                  resumo.disponivel
+                                    ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                                    : resumo.estado === 'ENCERRADO'
+                                    ? 'text-rose-600 dark:text-rose-400 font-semibold'
+                                    : 'text-amber-600 dark:text-amber-400 font-semibold'
+                                }
+                              >
+                                {resumo.tituloStatus}
+                              </span>
+                              <span aria-hidden="true"> · </span>
+                              <span className="font-mono tabular-nums">{ev.duracao_minutos} min</span>
+                            </p>
+                            <h3 className="text-base font-bold tracking-tight text-neutral-900 dark:text-white leading-snug">
+                              {ev.nome}
+                            </h3>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed line-clamp-3">
+                          {ev.descricao || 'Atendimento programado com agendamento online de data e horário.'}
+                        </p>
+
+                        {ev.exibir_produto_publico && (ev.produto_nome || (ev.produto_valor && ev.produto_valor > 0)) && (
+                          <div className="pt-2.5 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-between gap-2 text-xs">
+                            <span className="text-neutral-600 dark:text-neutral-300 font-medium truncate">
+                              {ev.produto_nome || ev.nome}
+                            </span>
+                            {ev.produto_valor && ev.produto_valor > 0 ? (
+                              <span className="font-mono tabular-nums font-bold text-emerald-700 dark:text-emerald-400 shrink-0">
+                                {ev.produto_parcelas && ev.produto_parcelas > 1 && ev.produto_valor_mensal && ev.produto_valor_mensal > 0
+                                  ? `${ev.produto_parcelas}x ${formatarMoedaBRL(ev.produto_valor_mensal)}`
+                                  : formatarMoedaBRL(ev.produto_valor)}
+                              </span>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-3 pt-2 border-t border-neutral-100 dark:border-neutral-800">
+                        <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-neutral-400">
+                          {resumo.disponivel ? (
+                            <span className="font-mono tabular-nums text-emerald-700 dark:text-emerald-400 font-semibold">
+                              {resumo.vagasTotais} vaga{resumo.vagasTotais !== 1 ? 's' : ''} em {resumo.datasComVaga} dia{resumo.datasComVaga !== 1 ? 's' : ''}
+                            </span>
+                          ) : (
+                            <span className="text-neutral-500 dark:text-neutral-400">
+                              {resumo.permitirListaEspera
+                                ? 'Cadastre-se para ser avisado na reabertura'
+                                : 'Indisponível no momento'}
+                            </span>
+                          )}
+                        </div>
+
+                        {resumo.disponivel ? (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEventBooking(ev.slug)}
+                            className="w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors shadow-sm cursor-pointer"
+                          >
+                            <span>Agendar neste Evento</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenUnavailableModal(ev)}
+                            className="w-full py-2.5 px-4 bg-neutral-100 hover:bg-amber-50 dark:bg-neutral-800 dark:hover:bg-amber-950/40 border border-neutral-200 dark:border-neutral-700 hover:border-amber-400 text-neutral-800 dark:text-neutral-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                          >
+                            {resumo.estado === 'ENCERRADO' ? (
+                              <PauseCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                            ) : (
+                              <BellRing className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                            )}
+                            <span>
+                              {resumo.estado === 'ENCERRADO'
+                                ? 'Encerrado · Ver Aviso / Lista de Espera'
+                                : resumo.estado === 'ESGOTADO'
+                                ? 'Vagas Esgotadas · Avise-me'
+                                : 'Agenda Fechada · Lista de Espera'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </main>
+
+        <footer className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 border-t border-neutral-200 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+          <span>
+            © {new Date().getFullYear()} {empresaNome}
+            {empresaEndereco ? ` · ${empresaEndereco}` : ''}
+            {empresaCnpj ? ` · CNPJ ${empresaCnpj}` : ''}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-500 shrink-0" />
+            <span>Agendamento oficial e acompanhamentos</span>
+          </span>
+        </footer>
+
+        {/* MODAL: EVENTO INDISPONÍVEL + LISTA DE ESPERA */}
+        {waitlistEvent && (() => {
+          const wResumo = storage.getEventoDisponibilidadeResumo(waitlistEvent);
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
+              <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-4 shadow-2xl">
+                <div className="flex items-start justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800/70 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                      <AlertCircle className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                        {wResumo.tituloStatus}
+                      </p>
+                      <h3 className="text-sm sm:text-base font-bold text-neutral-900 dark:text-white truncate">
+                        {waitlistEvent.nome}
+                      </h3>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setWaitlistEvent(null)}
+                    className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Mensagem configurada no admin */}
+                <div className="p-4 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-xl text-xs sm:text-sm text-amber-950 dark:text-amber-100 leading-relaxed">
+                  {wResumo.mensagem}
+                </div>
+
+                {wlSucesso ? (
+                  <div className="p-5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 rounded-xl text-center space-y-3">
+                    <CheckCircle2 className="w-8 h-8 text-emerald-600 dark:text-emerald-400 mx-auto" />
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-bold text-emerald-900 dark:text-emerald-200">
+                        Interesse registrado com sucesso!
+                      </h4>
+                      <p className="text-xs text-emerald-800 dark:text-emerald-300 leading-relaxed">
+                        {wlSucesso.mensagem}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setWaitlistEvent(null)}
+                      className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                    >
+                      Voltar para os Eventos
+                    </button>
+                  </div>
+                ) : wResumo.permitirListaEspera ? (
+                  <form onSubmit={(e) => handleSubmitWaitlist(e, waitlistEvent)} className="space-y-3 text-xs">
+                    <div className="flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200 font-semibold">
+                      <BellRing className="w-3.5 h-3.5 text-orange-500" />
+                      <span>Cadastre-se para nossa equipe avisar quando a agenda abrir:</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                          Nome Completo *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={wlNome}
+                          onChange={(e) => setWlNome(e.target.value)}
+                          placeholder="Seu nome completo"
+                          className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                          WhatsApp com DDD *
+                        </label>
+                        <input
+                          type="tel"
+                          inputMode="tel"
+                          required
+                          maxLength={15}
+                          value={wlWhatsapp}
+                          onChange={(e) => setWlWhatsapp(aplicarMascaraTelefoneBR(e.target.value))}
+                          placeholder="(11) 99999-9999"
+                          className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl font-mono text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                          E-mail
+                        </label>
+                        <input
+                          type="email"
+                          value={wlEmail}
+                          onChange={(e) => setWlEmail(sanitizarEmailInput(e.target.value))}
+                          placeholder="seuemail@exemplo.com"
+                          className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                          {waitlistEvent.label_local?.trim() || 'Escola / Bairro / Local'}
+                        </label>
+                        <input
+                          type="text"
+                          value={wlLocal}
+                          onChange={(e) => setWlLocal(e.target.value)}
+                          placeholder="Onde você prefere ou estuda"
+                          className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                        Observação (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={wlObservacao}
+                        onChange={(e) => setWlObservacao(e.target.value)}
+                        placeholder="Ex: Prefiro atendimento no período da manhã"
+                        className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                      />
+                    </div>
+
+                    {wlErro && (
+                      <div className="p-2.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 rounded-xl text-xs">
+                        {wlErro}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={wlSubmitting}
+                      className="w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+                    >
+                      {wlSubmitting ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Registrando interesse...</span>
+                        </>
+                      ) : (
+                        <>
+                          <BellRing className="w-4 h-4" />
+                          <span>Avise-me Quando a Agenda Abrir</span>
+                        </>
+                      )}
+                    </button>
+                  </form>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+                    {empresaWhatsapp && (
+                      <a
+                        href={gerarLinkWhatsApp(empresaWhatsapp, `Olá! Vi que o evento "${waitlistEvent.nome}" está indisponível. Gostaria de informações.`)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        <span>Falar com o Atendimento</span>
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setWaitlistEvent(null)}
+                      className="px-4 py-2.5 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 rounded-xl text-xs font-semibold cursor-pointer"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Modal Autoatendimento */}
+        {renderSelfServiceModal()}
+      </div>
+    );
+  }
+
+  // Helper de renderização do modal de Autoatendimento por Protocolo
+  function renderSelfServiceModal() {
+    if (!selfServiceOpen) return null;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
+        <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-4 shadow-2xl">
+          <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800">
+            <div className="flex items-center gap-2">
+              <CalendarClock className="w-5 h-5 text-orange-500" />
+              <h3 className="text-sm sm:text-base font-bold text-neutral-900 dark:text-white">
+                Consultar, Cancelar ou Remarcar
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelfServiceOpen(false)}
+              className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <form onSubmit={handleBuscarProtocolo} className="space-y-3 text-xs">
+            <div>
+              <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                Número do Protocolo *
+              </label>
+              <input
+                type="text"
+                required
+                value={ssProtocolo}
+                onChange={(e) => setSsProtocolo(e.target.value.toUpperCase())}
+                placeholder="Ex: PROT-20261113-ABCD"
+                className="w-full px-3 py-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl font-mono text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                WhatsApp ou E-mail cadastrado *
+              </label>
+              <input
+                type="text"
+                required
+                value={ssContato}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val && !/[a-zA-Z@]/.test(val)) {
+                    setSsContato(aplicarMascaraTelefoneBR(val));
+                  } else {
+                    setSsContato(sanitizarEmailInput(val));
+                  }
+                }}
+                placeholder="Ex: (11) 99999-8888 ou seu@email.com"
+                className="w-full px-3 py-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>Localizar Agendamento</span>
+            </button>
+          </form>
+
+          {ssErro && (
+            <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{ssErro}</span>
+            </div>
+          )}
+
+          {ssSucesso && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{ssSucesso}</span>
+            </div>
+          )}
+
+          {ssResultado && (
+            <div className="p-4 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <strong className="text-neutral-900 dark:text-white">{ssResultado.evento.nome}</strong>
+                <span className="font-mono text-[11px] font-semibold text-orange-600 dark:text-orange-400">
+                  {ssResultado.agendamento.status}
+                </span>
+              </div>
+              <p className="text-neutral-600 dark:text-neutral-400">
+                Participante: <strong>{ssResultado.lead.nome}</strong> · Data atual:{' '}
+                <strong className="font-mono tabular-nums">
+                  {formatarDataBR(ssResultado.agendamento.data_agendamento)} às {ssResultado.agendamento.hora_inicio}
+                </strong>
+              </p>
+
+              {ssResultado.agendamento.status !== 'CANCELADO' && ssResultado.evento.permite_cancelamento && (
+                <div className="space-y-3 pt-2 border-t border-neutral-200 dark:border-neutral-800">
+                  <div className="space-y-2">
+                    <p className="font-semibold text-neutral-800 dark:text-neutral-200">
+                      Remarcar para nova data e horário:
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={ssRemarcarData}
+                        onChange={(e) => {
+                          setSsRemarcarData(e.target.value);
+                          setSsRemarcarSlot(null);
+                        }}
+                        className="px-2.5 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs"
+                      >
+                        <option value="">Nova data...</option>
+                        {ssDatasRemarcacao.map((d) => (
+                          <option key={d.dataIso} value={d.dataIso}>
+                            {formatarDataBR(d.dataIso)} ({d.rotulo})
+                          </option>
+                        ))}
+                      </select>
+
+                      <select
+                        disabled={!ssRemarcarData}
+                        value={ssRemarcarSlot ? `${ssRemarcarSlot.horaInicio}|${ssRemarcarSlot.horaFim}` : ''}
+                        onChange={(e) => {
+                          const [hi, hf] = e.target.value.split('|');
+                          setSsRemarcarSlot(hi ? { horaInicio: hi, horaFim: hf || hi } : null);
+                        }}
+                        className="px-2.5 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs"
+                      >
+                        <option value="">Novo horário...</option>
+                        {ssSlotsRemarcacao
+                          .filter((s) => s.disponivel)
+                          .map((s) => (
+                            <option key={s.hora_inicio} value={`${s.hora_inicio}|${s.hora_fim}`}>
+                              {s.hora_inicio} ({s.vagas_restantes} vagas)
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={ssBusy || !ssRemarcarData || !ssRemarcarSlot}
+                      onClick={handleRemarcarProtocolo}
+                      className="flex-1 py-2 px-3 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl font-semibold cursor-pointer"
+                    >
+                      {ssBusy ? 'Processando...' : 'Confirmar Remarcação'}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={ssBusy}
+                      onClick={handleCancelarProtocolo}
+                      className="py-2 px-3 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-xl font-semibold flex items-center gap-1 cursor-pointer"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>Cancelar Vaga</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // MODO 2: AGENDAMENTO DIRETO NO EVENTO SELECIONADO
+  // =========================================================================
+  return (
+    <div className="min-h-screen md:h-screen md:overflow-hidden bg-neutral-100 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 flex flex-col transition-colors">
+      {renderTopBar()}
+
+      {/* Área Central Principal */}
+      <main className="flex-1 min-h-0 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 md:py-4 flex flex-col">
         {!eventoAtual ? (
           <div className="flex-1 flex items-center justify-center py-8">
             <div className="max-w-lg w-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl p-8 sm:p-10 text-center space-y-4 shadow-sm">
@@ -769,47 +1624,25 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                 <Calendar className="w-6 h-6" />
               </div>
 
-              {!cloudConnected ? (
-                <div className="space-y-1.5">
-                  <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
-                    Agendamento temporariamente indisponível
-                  </h2>
-                  <p className="text-xs sm:text-sm text-neutral-500 dark:text-neutral-400 leading-relaxed">
-                    Não foi possível carregar a agenda no momento. Por favor, tente novamente em instantes ou entre em contato pelos canais da empresa.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
-                    {selectedSlug ? `Evento "${selectedSlug}" não encontrado` : 'Nenhum evento publicado no momento'}
-                  </h2>
-                  <p className="text-xs sm:text-sm text-neutral-500 dark:text-neutral-400">
-                    {cloudState.lastError
-                      ? `Falha ao consultar a agenda: ${cloudState.lastError}`
-                      : 'Verifique se o link está correto ou entre em contato com o atendimento.'}
-                  </p>
-                </div>
-              )}
+              <div className="space-y-1.5">
+                <h2 className="text-lg font-bold text-neutral-900 dark:text-white">
+                  {selectedSlug ? `Evento "${selectedSlug}" não encontrado` : 'Nenhum evento selecionado'}
+                </h2>
+                <p className="text-xs sm:text-sm text-neutral-500 dark:text-neutral-400">
+                  {cloudState.lastError
+                    ? `Falha ao consultar a agenda: ${cloudState.lastError}`
+                    : 'Você pode visualizar todos os eventos disponíveis e acompanhar agendamentos na Landing Page.'}
+                </p>
+              </div>
 
-              {!initialSlug && eventos.length > 0 && (
-                <div className="pt-4 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
-                  <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium">
-                    Eventos disponíveis no momento:
-                  </p>
-                  <div className="flex flex-wrap gap-2 justify-center">
-                    {eventos.map((ev) => (
-                      <button
-                        key={ev.id_evento}
-                        type="button"
-                        onClick={() => handleChangeSelectedSlug(ev.slug)}
-                        className="px-3 py-1.5 bg-neutral-100 dark:bg-neutral-800 hover:bg-orange-50 dark:hover:bg-orange-950 border border-neutral-200 dark:border-neutral-700 text-xs rounded-lg font-medium text-neutral-800 dark:text-neutral-200 transition-colors cursor-pointer"
-                      >
-                        {ev.nome}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={handleEnterLandingPage}
+                className="px-5 py-2.5 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-semibold inline-flex items-center gap-2 transition-colors cursor-pointer"
+              >
+                <LayoutGrid className="w-4 h-4" />
+                <span>Ver Todos os Eventos</span>
+              </button>
             </div>
           </div>
         ) : (
@@ -817,7 +1650,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
             {/* COLUNA ESQUERDA: Identidade do Evento + Resumo + Contatos */}
             <aside className="md:col-span-5 lg:col-span-4 border-b md:border-b-0 md:border-r border-neutral-200 dark:border-neutral-800 p-5 sm:p-6 lg:p-7 flex flex-col justify-between gap-4 md:overflow-y-auto bg-neutral-50/70 dark:bg-neutral-950/30">
               <div className="space-y-4">
-                {/* Bloco Logo + Título do Evento */}
                 <div className="flex items-center gap-3.5">
                   {eventoAtual.imagem_url && !eventoImgErro ? (
                     <img
@@ -845,12 +1677,10 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                   </div>
                 </div>
 
-                {/* Descrição */}
                 <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-300 leading-relaxed">
                   {eventoAtual.descricao || 'Selecione a data e o horário desejado para confirmar seu atendimento.'}
                 </p>
 
-                {/* Produto / Valor Atrelado (se habilitado) */}
                 {eventoAtual.exibir_produto_publico && (eventoAtual.produto_nome || (eventoAtual.produto_valor && eventoAtual.produto_valor > 0)) && (
                   <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between gap-2 text-xs">
                     <div className="flex items-center gap-1.5 text-neutral-700 dark:text-neutral-200 font-medium min-w-0">
@@ -867,7 +1697,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                   </div>
                 )}
 
-                {/* Resumo Dinâmico da Escolha do Cliente */}
                 {(dataSelecionada || slotSelecionado) && (
                   <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 space-y-2 text-xs">
                     <p className="font-semibold text-neutral-800 dark:text-neutral-200">
@@ -899,7 +1728,6 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                 )}
               </div>
 
-              {/* Informações da Empresa (Compactas na Barra Lateral) */}
               <div className="pt-4 border-t border-neutral-200 dark:border-neutral-800 space-y-2.5 text-xs">
                 <div className="flex flex-wrap gap-2">
                   {empresaWhatsapp && (
@@ -943,94 +1771,231 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
               </div>
             </aside>
 
-            {/* COLUNA DIREITA: Fluxo Interativo de Agendamento */}
+            {/* COLUNA DIREITA: Fluxo Interativo ou Aviso de Indisponibilidade + Lista de Espera */}
             <section className="md:col-span-7 lg:col-span-8 p-5 sm:p-6 lg:p-8 flex flex-col min-h-0">
-              {/* Stepper Horizontal em Linha Única */}
-              <div className="pb-4 mb-5 border-b border-neutral-200 dark:border-neutral-800 flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setEtapaAtual(1)}
-                  className={`flex-1 py-2 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer ${
-                    etapaAtual === 1
-                      ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-semibold border border-orange-200 dark:border-orange-800/70'
-                      : dataSelecionada
-                      ? 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-transparent'
-                      : 'text-neutral-400 dark:text-neutral-500 border border-transparent'
-                  }`}
-                >
-                  <span
-                    className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                      dataSelecionada ? 'bg-emerald-600 text-white' : 'bg-orange-600 text-white'
-                    }`}
-                  >
-                    {dataSelecionada ? <Check className="w-3 h-3" /> : '1'}
-                  </span>
-                  <span>1. Data</span>
-                </button>
+              {resumoEventoAtual && !resumoEventoAtual.disponivel ? (
+                <div className="flex-1 min-h-0 md:overflow-y-auto flex flex-col justify-center py-2">
+                  <div className="max-w-lg mx-auto w-full space-y-5">
+                    <div className="flex items-start gap-3">
+                      <div className="w-11 h-11 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                        <AlertCircle className="w-6 h-6" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                          {resumoEventoAtual.tituloStatus}
+                        </p>
+                        <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
+                          Novas reservas temporariamente indisponíveis
+                        </h2>
+                        <p className="text-xs sm:text-sm text-neutral-600 dark:text-neutral-300 leading-relaxed">
+                          {resumoEventoAtual.mensagem}
+                        </p>
+                      </div>
+                    </div>
 
-                <button
-                  type="button"
-                  disabled={!dataSelecionada}
-                  onClick={() => setEtapaAtual(2)}
-                  className={`flex-1 py-2 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${
-                    etapaAtual === 2
-                      ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-semibold border border-orange-200 dark:border-orange-800/70 cursor-pointer'
-                      : slotSelecionado
-                      ? 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-transparent cursor-pointer'
-                      : 'text-neutral-400 dark:text-neutral-600 opacity-60 cursor-not-allowed border border-transparent'
-                  }`}
-                >
-                  <span
-                    className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                      slotSelecionado
-                        ? 'bg-emerald-600 text-white'
-                        : etapaAtual === 2
-                        ? 'bg-orange-600 text-white'
-                        : 'bg-neutral-300 dark:bg-neutral-700 text-neutral-800 dark:text-neutral-300'
-                    }`}
-                  >
-                    {slotSelecionado ? <Check className="w-3 h-3" /> : '2'}
-                  </span>
-                  <span>2. Horário</span>
-                </button>
+                    {wlSucesso ? (
+                      <div className="p-5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-2xl text-center space-y-3">
+                        <CheckCircle2 className="w-8 h-8 text-emerald-600 dark:text-emerald-400 mx-auto" />
+                        <p className="text-xs sm:text-sm font-medium text-emerald-900 dark:text-emerald-200">
+                          {wlSucesso.mensagem}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleEnterLandingPage}
+                          className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                        >
+                          Explorar Outros Eventos Abertos
+                        </button>
+                      </div>
+                    ) : resumoEventoAtual.permitirListaEspera ? (
+                      <form
+                        onSubmit={(e) => handleSubmitWaitlist(e, eventoAtual)}
+                        className="p-5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-3 text-xs"
+                      >
+                        <div className="flex items-center gap-2 font-semibold text-neutral-800 dark:text-neutral-200">
+                          <BellRing className="w-4 h-4 text-orange-500" />
+                          <span>Entrar na Lista de Espera</span>
+                        </div>
 
-                <button
-                  type="button"
-                  disabled={!slotSelecionado}
-                  onClick={() => setEtapaAtual(3)}
-                  className={`flex-1 py-2 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${
-                    etapaAtual === 3
-                      ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-semibold border border-orange-200 dark:border-orange-800/70 cursor-pointer'
-                      : 'text-neutral-400 dark:text-neutral-600 opacity-60 cursor-not-allowed border border-transparent'
-                  }`}
-                >
-                  <span
-                    className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                      etapaAtual === 3
-                        ? 'bg-orange-600 text-white'
-                        : 'bg-neutral-300 dark:bg-neutral-700 text-neutral-800 dark:text-neutral-300'
-                    }`}
-                  >
-                    3
-                  </span>
-                  <span>3. Dados</span>
-                </button>
-              </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                              Nome Completo *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={wlNome}
+                              onChange={(e) => setWlNome(e.target.value)}
+                              placeholder="Seu nome completo"
+                              className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                              WhatsApp com DDD *
+                            </label>
+                            <input
+                              type="tel"
+                              required
+                              maxLength={15}
+                              value={wlWhatsapp}
+                              onChange={(e) => setWlWhatsapp(aplicarMascaraTelefoneBR(e.target.value))}
+                              placeholder="(11) 99999-9999"
+                              className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl font-mono text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                            />
+                          </div>
+                        </div>
 
-              {/* Conteúdo da Etapa Ativa */}
-              <div className="flex-1 min-h-0 md:overflow-y-auto pr-0.5">
-                {eventoAtual.status !== 'PUBLICADO' ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center py-8 space-y-3">
-                    <AlertCircle className="w-10 h-10 text-amber-500" />
-                    <h3 className="text-base sm:text-lg font-bold text-neutral-900 dark:text-white">
-                      Agendamentos temporariamente indisponíveis
-                    </h3>
-                    <p className="text-xs sm:text-sm text-neutral-500 dark:text-neutral-400 max-w-md">
-                      Este evento está com status <strong>{eventoAtual.status}</strong> no momento. Entre em contato pelos canais ao lado para mais informações.
-                    </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                              E-mail
+                            </label>
+                            <input
+                              type="email"
+                              value={wlEmail}
+                              onChange={(e) => setWlEmail(sanitizarEmailInput(e.target.value))}
+                              placeholder="seuemail@exemplo.com"
+                              className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
+                              {eventoAtual.label_local?.trim() || 'Escola / Bairro / Local'}
+                            </label>
+                            <input
+                              type="text"
+                              value={wlLocal}
+                              onChange={(e) => setWlLocal(e.target.value)}
+                              placeholder="Local de preferência"
+                              className="w-full px-3 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                            />
+                          </div>
+                        </div>
+
+                        {wlErro && (
+                          <div className="p-2.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 rounded-xl">
+                            {wlErro}
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="submit"
+                            disabled={wlSubmitting}
+                            className="flex-1 py-2.5 px-4 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl font-bold flex items-center justify-center gap-2 cursor-pointer"
+                          >
+                            {wlSubmitting ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span>Enviando...</span>
+                              </>
+                            ) : (
+                              <>
+                                <BellRing className="w-4 h-4" />
+                                <span>Avise-me Quando Abrir</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleEnterLandingPage}
+                            className="py-2.5 px-4 bg-neutral-200 hover:bg-neutral-300 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-neutral-800 dark:text-neutral-200 rounded-xl font-semibold cursor-pointer"
+                          >
+                            Ver Outros Eventos
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleEnterLandingPage}
+                        className="w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <LayoutGrid className="w-4 h-4" />
+                        <span>Explorar Outros Eventos Disponíveis</span>
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <>
+                </div>
+              ) : (
+                <>
+                  {/* Stepper Horizontal em Linha Única */}
+                  <div className="pb-4 mb-5 border-b border-neutral-200 dark:border-neutral-800 flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setEtapaAtual(1)}
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer ${
+                        etapaAtual === 1
+                          ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-semibold border border-orange-200 dark:border-orange-800/70'
+                          : dataSelecionada
+                          ? 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-transparent'
+                          : 'text-neutral-400 dark:text-neutral-500 border border-transparent'
+                      }`}
+                    >
+                      <span
+                        className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                          dataSelecionada ? 'bg-emerald-600 text-white' : 'bg-orange-600 text-white'
+                        }`}
+                      >
+                        {dataSelecionada ? <Check className="w-3 h-3" /> : '1'}
+                      </span>
+                      <span>1. Data</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!dataSelecionada}
+                      onClick={() => setEtapaAtual(2)}
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${
+                        etapaAtual === 2
+                          ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-semibold border border-orange-200 dark:border-orange-800/70 cursor-pointer'
+                          : slotSelecionado
+                          ? 'bg-neutral-50 dark:bg-neutral-950 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 border border-transparent cursor-pointer'
+                          : 'text-neutral-400 dark:text-neutral-600 opacity-60 cursor-not-allowed border border-transparent'
+                      }`}
+                    >
+                      <span
+                        className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                          slotSelecionado
+                            ? 'bg-emerald-600 text-white'
+                            : etapaAtual === 2
+                            ? 'bg-orange-600 text-white'
+                            : 'bg-neutral-300 dark:bg-neutral-700 text-neutral-800 dark:text-neutral-300'
+                        }`}
+                      >
+                        {slotSelecionado ? <Check className="w-3 h-3" /> : '2'}
+                      </span>
+                      <span>2. Horário</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!slotSelecionado}
+                      onClick={() => setEtapaAtual(3)}
+                      className={`flex-1 py-2 px-3 rounded-xl text-xs transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${
+                        etapaAtual === 3
+                          ? 'bg-orange-50 dark:bg-orange-950/50 text-orange-700 dark:text-orange-300 font-semibold border border-orange-200 dark:border-orange-800/70 cursor-pointer'
+                          : 'text-neutral-400 dark:text-neutral-600 opacity-60 cursor-not-allowed border border-transparent'
+                      }`}
+                    >
+                      <span
+                        className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                          etapaAtual === 3
+                            ? 'bg-orange-600 text-white'
+                            : 'bg-neutral-300 dark:bg-neutral-700 text-neutral-800 dark:text-neutral-300'
+                        }`}
+                      >
+                        3
+                      </span>
+                      <span>3. Dados</span>
+                    </button>
+                  </div>
+
+                  {/* Conteúdo da Etapa Ativa */}
+                  <div className="flex-1 min-h-0 md:overflow-y-auto pr-0.5">
                     {/* ETAPA 1: DATA */}
                     {etapaAtual === 1 && (
                       <div className="space-y-4">
@@ -1488,15 +2453,14 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
                         </form>
                       </div>
                     )}
-                  </>
-                )}
-              </div>
+                  </div>
+                </>
+              )}
             </section>
           </div>
         )}
       </main>
 
-      {/* Rodapé Discreto em 1 Linha */}
       <footer className="w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-3 pt-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-400 dark:text-neutral-500 shrink-0">
         <span>
           © {new Date().getFullYear()} {empresaNome}
@@ -1507,171 +2471,7 @@ export const PublicBookingView: React.FC<PublicBookingViewProps> = ({
         </span>
       </footer>
 
-      {/* Modal Autoatendimento: Consultar / Cancelar / Remarcar Agendamento por Protocolo */}
-      {selfServiceOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800">
-              <div className="flex items-center gap-2">
-                <CalendarClock className="w-5 h-5 text-orange-500" />
-                <h3 className="text-sm sm:text-base font-bold text-neutral-900 dark:text-white">
-                  Consultar, Cancelar ou Remarcar
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelfServiceOpen(false)}
-                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleBuscarProtocolo} className="space-y-3 text-xs">
-              <div>
-                <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
-                  Número do Protocolo *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={ssProtocolo}
-                  onChange={(e) => setSsProtocolo(e.target.value.toUpperCase())}
-                  placeholder="Ex: PROT-20261113-ABCD"
-                  className="w-full px-3 py-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl font-mono text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-neutral-700 dark:text-neutral-300 mb-1">
-                  WhatsApp ou E-mail cadastrado *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={ssContato}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val && !/[a-zA-Z@]/.test(val)) {
-                      setSsContato(aplicarMascaraTelefoneBR(val));
-                    } else {
-                      setSsContato(sanitizarEmailInput(val));
-                    }
-                  }}
-                  placeholder="Ex: (11) 99999-8888 ou seu@email.com"
-                  className="w-full px-3 py-2.5 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-xl text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-2.5 bg-neutral-900 hover:bg-neutral-800 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-white rounded-xl font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Search className="w-3.5 h-3.5" />
-                <span>Localizar Agendamento</span>
-              </button>
-            </form>
-
-            {ssErro && (
-              <div className="p-3 bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 rounded-xl text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{ssErro}</span>
-              </div>
-            )}
-
-            {ssSucesso && (
-              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{ssSucesso}</span>
-              </div>
-            )}
-
-            {ssResultado && (
-              <div className="p-4 bg-neutral-50 dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 rounded-2xl space-y-3 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <strong className="text-neutral-900 dark:text-white">{ssResultado.evento.nome}</strong>
-                  <span className="font-mono text-[11px] font-semibold text-orange-600 dark:text-orange-400">
-                    {ssResultado.agendamento.status}
-                  </span>
-                </div>
-                <p className="text-neutral-600 dark:text-neutral-400">
-                  Participante: <strong>{ssResultado.lead.nome}</strong> · Data atual:{' '}
-                  <strong className="font-mono tabular-nums">
-                    {formatarDataBR(ssResultado.agendamento.data_agendamento)} às {ssResultado.agendamento.hora_inicio}
-                  </strong>
-                </p>
-
-                {ssResultado.agendamento.status !== 'CANCELADO' && ssResultado.evento.permite_cancelamento && (
-                  <div className="space-y-3 pt-2 border-t border-neutral-200 dark:border-neutral-800">
-                    <div className="space-y-2">
-                      <p className="font-semibold text-neutral-800 dark:text-neutral-200">
-                        Remarcar para nova data e horário:
-                      </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <select
-                          value={ssRemarcarData}
-                          onChange={(e) => {
-                            setSsRemarcarData(e.target.value);
-                            setSsRemarcarSlot(null);
-                          }}
-                          className="px-2.5 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs"
-                        >
-                          <option value="">Nova data...</option>
-                          {proximasDatas.map((d) => (
-                            <option key={d.dataIso} value={d.dataIso}>
-                              {formatarDataBR(d.dataIso)} ({d.rotulo})
-                            </option>
-                          ))}
-                        </select>
-
-                        <select
-                          disabled={!ssRemarcarData}
-                          value={ssRemarcarSlot ? `${ssRemarcarSlot.horaInicio}|${ssRemarcarSlot.horaFim}` : ''}
-                          onChange={(e) => {
-                            const [hi, hf] = e.target.value.split('|');
-                            setSsRemarcarSlot(hi ? { horaInicio: hi, horaFim: hf || hi } : null);
-                          }}
-                          className="px-2.5 py-2 bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs"
-                        >
-                          <option value="">Novo horário...</option>
-                          {ssSlotsRemarcacao
-                            .filter((s) => s.disponivel)
-                            .map((s) => (
-                              <option key={s.hora_inicio} value={`${s.hora_inicio}|${s.hora_fim}`}>
-                                {s.hora_inicio} ({s.vagas_restantes} vagas)
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        disabled={ssBusy || !ssRemarcarData || !ssRemarcarSlot}
-                        onClick={handleRemarcarProtocolo}
-                        className="flex-1 py-2 px-3 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl font-semibold cursor-pointer"
-                      >
-                        {ssBusy ? 'Processando...' : 'Confirmar Remarcação'}
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={ssBusy}
-                        onClick={handleCancelarProtocolo}
-                        className="py-2 px-3 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-xl font-semibold flex items-center gap-1 cursor-pointer"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        <span>Cancelar Vaga</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {renderSelfServiceModal()}
     </div>
   );
 };

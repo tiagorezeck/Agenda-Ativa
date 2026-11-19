@@ -91,7 +91,8 @@ var SHEETS_SCHEMA = {
     "modo_datas", "recorrencia_ativa", "datas_especificas",
     "data_inicio", "data_fim", "dias_semana", "duracao_minutos",
     "intervalo_minutos", "capacidade_padrao", "responsavel_id",
-    "status", "mensagem_confirmacao", "permite_cancelamento",
+    "status", "agenda_publica_ativa", "motivo_indisponivel", "mensagem_indisponivel", "permitir_lista_espera",
+    "mensagem_confirmacao", "permite_cancelamento",
     "horas_antecedencia_cancelamento", "visitas", "criado_em", "atualizado_em"
   ],
   HORARIOS: ["id_horario", "id_evento", "hora_inicio", "hora_fim", "capacidade", "dias_aplicaveis", "ativo"],
@@ -494,6 +495,29 @@ function doPost(e) {
       });
     }
 
+    // 4E. CADASTRO EM LISTA DE ESPERA QUANDO EVENTO ESTÁ FECHADO / ESGOTADO (SOB LOCK)
+    if (action === "REGISTER_WAITLIST") {
+      var dbWait = loadAuthoritativeDatabaseFast(folder, false);
+      var waitInput = payload.data || payload.payload || payload;
+      var waitOutcome = executeAtomicWaitlistOnDb(dbWait, waitInput);
+      if (!waitOutcome.success) {
+        return jsonResponse({ status: "error", statusCode: 400, message: waitOutcome.error }, 400);
+      }
+
+      trimLogsInDb(dbWait);
+      var serializedWaitDb = JSON.stringify(dbWait);
+      upsertRootJsonFileFast(folder, serializedWaitDb);
+      putToCache(CACHE_KEY_ROOT, serializedWaitDb, CACHE_TTL_SECONDS);
+      syncBookingDeltaToSheets(spreadsheet, waitOutcome.touched);
+
+      return jsonResponse({
+        status: "success",
+        waitlist: true,
+        data: waitOutcome.data,
+        database: dbWait
+      });
+    }
+
     // 5. SALVAR / SINCRONIZAR BANCO GERAL (save)
     var incomingData = payload.data || payload.payload || payload;
     var existingData = loadAuthoritativeDatabaseFast(folder, false);
@@ -635,7 +659,9 @@ function executeAtomicBookingOnDb(db, bookingData) {
   }
 
   if (!evento) return { success: false, error: "Evento não localizado." };
-  if (evento.status !== "PUBLICADO") return { success: false, error: "Este evento não está aberto para agendamentos." };
+  if (evento.status !== "PUBLICADO" || evento.agenda_publica_ativa === false) {
+    return { success: false, error: evento.mensagem_indisponivel || "Este evento não está aberto para agendamentos." };
+  }
 
   var capacidadeSlot = Number(evento.capacidade_padrao) || 1;
   for (var h = 0; h < db.horarios.length; h++) {
@@ -1050,6 +1076,157 @@ function executeAtomicRescheduleOnDb(db, input) {
   return { success: true, data: agd };
 }
 
+function executeAtomicWaitlistOnDb(db, waitInput) {
+  db.eventos = Array.isArray(db.eventos) ? db.eventos : [];
+  db.leads = Array.isArray(db.leads) ? db.leads : [];
+  db.crm = Array.isArray(db.crm) ? db.crm : [];
+  db.historico_crm = Array.isArray(db.historico_crm) ? db.historico_crm : [];
+  db.logs = Array.isArray(db.logs) ? db.logs : [];
+  db.notificacoes = Array.isArray(db.notificacoes) ? db.notificacoes : [];
+
+  var slug = String(waitInput.slug_evento || "").trim();
+  var evento = null;
+  for (var i = 0; i < db.eventos.length; i++) {
+    if (db.eventos[i].slug === slug || db.eventos[i].id_evento === slug) {
+      evento = db.eventos[i];
+      break;
+    }
+  }
+  if (!evento) {
+    return { success: false, error: "Evento não encontrado para cadastro na lista de espera." };
+  }
+
+  var nome = String(waitInput.nome || "").trim();
+  var whatsappNorm = String(waitInput.whatsapp || "").replace(/\D/g, "");
+  var emailNorm = String(waitInput.email || "").trim().toLowerCase();
+  var localNorm = String(waitInput.local || "").trim();
+  var alunoNorm = String(waitInput.aluno_ganhador || "").trim();
+  var motivoTxt = String(waitInput.motivo || "Agenda fechada / sem vagas").trim();
+  var obsExtra = String(waitInput.observacoes || "").trim();
+
+  if (!nome || !whatsappNorm) {
+    return { success: false, error: "Nome completo e WhatsApp são obrigatórios." };
+  }
+
+  var nowIso = new Date().toISOString();
+  var obsNota = "[Lista de Espera - " + evento.nome + " (" + motivoTxt + ")]" + (obsExtra ? " " + obsExtra : "");
+
+  var lead = null;
+  for (var l = 0; l < db.leads.length; l++) {
+    var existing = db.leads[l];
+    if (!existing || existing.excluido === true) continue;
+    var existingZap = String(existing.whatsapp || "").replace(/\D/g, "");
+    var existingEmail = String(existing.email || "").trim().toLowerCase();
+    if ((whatsappNorm && existingZap === whatsappNorm) || (emailNorm && existingEmail === emailNorm)) {
+      lead = existing;
+      break;
+    }
+  }
+
+  var idLead = "";
+  if (lead) {
+    idLead = lead.id_lead;
+    lead.nome = nome || lead.nome;
+    if (localNorm) lead.local = localNorm;
+    if (alunoNorm) lead.aluno_ganhador = alunoNorm;
+    lead.observacoes = lead.observacoes ? (lead.observacoes + " | " + obsNota) : obsNota;
+    lead.atualizado_em = nowIso;
+  } else {
+    idLead = "LED-" + Utilities.getUuid().slice(0, 8).toUpperCase();
+    lead = {
+      id_lead: idLead,
+      nome: nome,
+      whatsapp: whatsappNorm,
+      email: emailNorm,
+      empresa: "",
+      cargo: "",
+      local: localNorm,
+      aluno_ganhador: alunoNorm,
+      status_cliente: "LEAD",
+      origem_primeiro_evento: evento.id_evento,
+      total_agendamentos: 0,
+      data_ultimo_agendamento: "",
+      responsavel_id: evento.responsavel_id || "USR-001",
+      observacoes: obsNota,
+      excluido: false,
+      criado_em: nowIso,
+      atualizado_em: nowIso
+    };
+    db.leads.unshift(lead);
+  }
+
+  var idOp = "CRM-" + Utilities.getUuid().slice(0, 8).toUpperCase();
+  var valorEst = Number(evento.produto_valor) || 0;
+  var newCrm = {
+    id_oportunidade: idOp,
+    id_lead: idLead,
+    titulo: nome,
+    produto_nome: evento.produto_nome || evento.nome,
+    produto_valor_mensal: Number(evento.produto_valor_mensal) || 0,
+    produto_parcelas: Number(evento.produto_parcelas) || 1,
+    estagio: "FOLLOW_UP_STAND_BY",
+    sub_status: "FOLLOW",
+    valor_estimado: valorEst,
+    valor_fechado: 0,
+    responsavel_id: evento.responsavel_id || "USR-001",
+    data_proximo_followup: nowIso.slice(0, 10),
+    motivo_perda: "",
+    data_fechamento: "",
+    ordem_coluna: 1,
+    criado_em: nowIso,
+    atualizado_em: nowIso
+  };
+  db.crm.unshift(newCrm);
+
+  var newHist = {
+    id_historico: "HCRM-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
+    id_oportunidade: idOp,
+    tipo: "NOTA",
+    estagio_anterior: "",
+    estagio_novo: "FOLLOW_UP_STAND_BY",
+    descricao: "Interessado cadastrado na Lista de Espera para \"" + evento.nome + "\" (" + motivoTxt + "). Entrar em contato quando a agenda abrir.",
+    usuario_id: "SISTEMA",
+    criado_em: nowIso
+  };
+  db.historico_crm.unshift(newHist);
+
+  db.notificacoes.unshift({
+    id_notificacao: "NTF-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
+    tipo: "LEAD",
+    titulo: "Novo interessado na Lista de Espera",
+    mensagem: nome + " pediu para ser avisado quando a agenda de \"" + evento.nome + "\" abrir.",
+    lida: false,
+    criado_em: nowIso
+  });
+
+  db.logs.unshift({
+    id_log: "LOG-" + Utilities.getUuid().slice(0, 8).toUpperCase(),
+    nivel: "INFO",
+    origem: "GAS_V2_PUBLIC_WAITLIST",
+    acao: "WAITLIST_REGISTERED",
+    detalhes: nome + " entrou na lista de espera de " + evento.nome,
+    ip_ou_user_agent: "",
+    timestamp: nowIso
+  });
+
+  return {
+    success: true,
+    data: {
+      id_lead: idLead,
+      id_oportunidade_crm: idOp,
+      evento_nome: evento.nome,
+      mensagem: "Cadastro realizado! Nossa equipe entrará em contato assim que novas vagas ou a agenda deste evento reabrir."
+    },
+    touched: {
+      lead: lead,
+      agendamento: null,
+      respostas: [],
+      crm: newCrm,
+      historico: newHist
+    }
+  };
+}
+
 // =========================================================================
 // ESPELHAMENTO EM BLOCO DAS 13 ABAS NO SHEETS (BATCH PROCESSING)
 // =========================================================================
@@ -1080,7 +1257,10 @@ function syncDataToGoogleSheets(ss, data) {
       Boolean(ev.recorrencia_ativa), JSON.stringify(ev.datas_especificas || []),
       ev.data_inicio || "", ev.data_fim || "", JSON.stringify(ev.dias_semana || []),
       Number(ev.duracao_minutos) || 60, Number(ev.intervalo_minutos) || 0, Number(ev.capacidade_padrao) || 1,
-      ev.responsavel_id || "", ev.status || "PUBLICADO", ev.mensagem_confirmacao || "",
+      ev.responsavel_id || "", ev.status || "PUBLICADO",
+      ev.agenda_publica_ativa !== false, ev.motivo_indisponivel || "", ev.mensagem_indisponivel || "",
+      ev.permitir_lista_espera !== false,
+      ev.mensagem_confirmacao || "",
       ev.permite_cancelamento !== false, Number(ev.horas_antecedencia_cancelamento) || 24,
       Number(ev.visitas) || 0, ev.criado_em || "", ev.atualizado_em || ""
     ];
@@ -1428,6 +1608,10 @@ function readDatabaseFromSheets(folder) {
           capacidade_padrao: Number(ev.capacidade_padrao) || 1,
           responsavel_id: String(ev.responsavel_id || "USR-001"),
           status: String(ev.status || "PUBLICADO"),
+          agenda_publica_ativa: ev.agenda_publica_ativa !== false && String(ev.agenda_publica_ativa).toLowerCase() !== "false",
+          motivo_indisponivel: ev.motivo_indisponivel ? String(ev.motivo_indisponivel) : undefined,
+          mensagem_indisponivel: ev.mensagem_indisponivel ? String(ev.mensagem_indisponivel) : undefined,
+          permitir_lista_espera: ev.permitir_lista_espera !== false && String(ev.permitir_lista_espera).toLowerCase() !== "false",
           mensagem_confirmacao: String(ev.mensagem_confirmacao || ""),
           permite_cancelamento: ev.permite_cancelamento !== false && String(ev.permite_cancelamento).toLowerCase() !== "false",
           horas_antecedencia_cancelamento: Number(ev.horas_antecedencia_cancelamento) || 24,

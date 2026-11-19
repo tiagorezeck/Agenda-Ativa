@@ -9,6 +9,7 @@ import { FormBuilderView } from './components/forms/FormBuilderView';
 import { LeadsView } from './components/leads/LeadsView';
 import { CrmKanbanView } from './components/crm/CrmKanbanView';
 import { QRCodeModal } from './components/qrcode/QRCodeModal';
+import { LinksQrCodesView } from './components/qrcode/LinksQrCodesView';
 import { PublicBookingView } from './components/public/PublicBookingView';
 import { SettingsView } from './components/settings/SettingsView';
 import { UsersView } from './components/settings/UsersView';
@@ -192,19 +193,18 @@ export default function App() {
     setPublicSlug(slug);
     setIsThankYouClosedRoute(false);
     setIsPublicView(true);
-    if (slug && window.location.pathname !== `/agendar/${slug}`) {
-      window.history.pushState({}, '', `/agendar/${slug}`);
+    const targetPath = slug ? `/agendar/${encodeURIComponent(slug)}${window.location.search}` : `/agendar${window.location.search}`;
+    if (window.location.pathname + window.location.search !== targetPath) {
+      window.history.pushState({}, '', targetPath);
     }
   };
 
   const handleOpenPublicGeneral = () => {
-    const db = storage.getDatabase();
-    const slug = db.eventos[0]?.slug || '';
-    setPublicSlug(slug);
+    setPublicSlug('');
     setIsThankYouClosedRoute(false);
     setIsPublicView(true);
-    const targetPath = slug ? `/agendar/${slug}` : '/agendar';
-    if (window.location.pathname !== targetPath) {
+    const targetPath = `/agendar${window.location.search}`;
+    if (window.location.pathname + window.location.search !== targetPath) {
       window.history.pushState({}, '', targetPath);
     }
   };
@@ -251,8 +251,11 @@ export default function App() {
         onToggleTheme={toggleTheme}
         onSelectSlug={(newSlug) => {
           setPublicSlug(newSlug);
-          if (newSlug && window.location.pathname !== `/agendar/${newSlug}`) {
-            window.history.pushState({}, '', `/agendar/${encodeURIComponent(newSlug)}${window.location.search}`);
+          const nextUrl = newSlug
+            ? `/agendar/${encodeURIComponent(newSlug)}${window.location.search}`
+            : `/agendar${window.location.search}`;
+          if (window.location.pathname + window.location.search !== nextUrl) {
+            window.history.pushState({}, '', nextUrl);
           }
         }}
       />
@@ -343,37 +346,13 @@ export default function App() {
           {activeTab === 'metas' && <GoalsView key={refreshCounter} />}
 
           {activeTab === 'qrcode' && (
-            <div className="space-y-6">
-              <div className="p-6 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-2xl shadow-sm">
-                <h2 className="text-lg font-bold text-neutral-900 dark:text-white tracking-tight">
-                  Central de Divulgação: Links e QR Codes
-                </h2>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                  Selecione um evento abaixo para gerar e visualizar o QR Code em alta definição, copiar link de agendamento ou compartilhar no WhatsApp.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {storage.getDatabase().eventos.map((ev) => (
-                  <div
-                    key={ev.id_evento}
-                    className="p-5 bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 rounded-xl space-y-3 shadow-sm"
-                  >
-                    <div className="space-y-1">
-                      <h3 className="text-sm font-bold text-neutral-900 dark:text-white">{ev.nome}</h3>
-                      <p className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">/agendar/{ev.slug}</p>
-                    </div>
-
-                    <button
-                      onClick={() => setQrCodeModalEvento(ev)}
-                      className="w-full py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
-                    >
-                      Abrir QR Code &amp; Compartilhar
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <LinksQrCodesView
+              key={refreshCounter}
+              onOpenQrCode={(ev) => setQrCodeModalEvento(ev)}
+              onOpenPublicEvent={handleOpenPublicForEvent}
+              onOpenPublicPortal={handleOpenPublicGeneral}
+              onUpdated={() => setRefreshCounter((c) => c + 1)}
+            />
           )}
 
           {activeTab === 'config_empresa' && podeAcessarConfigEmpresa(getLoggedInUser()) && (

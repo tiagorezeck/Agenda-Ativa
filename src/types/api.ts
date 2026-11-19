@@ -19,6 +19,10 @@ export type GasAction =
   | 'GET_EVENT_BY_SLUG'
   | 'GET_SLOTS_AVAILABILITY'
   | 'CREATE_BOOKING'
+  | 'CANCEL_BOOKING'
+  | 'RESCHEDULE_BOOKING'
+  | 'INCREMENT_EVENT_VISIT'
+  | 'REGISTER_WAITLIST'
   | 'SAVE_EVENT'
   | 'DELETE_EVENT'
   | 'DUPLICATE_EVENT'
@@ -60,6 +64,24 @@ export interface BookingSuccessResult {
   hora_inicio: string;
   hora_fim: string;
   mensagem_confirmacao: string;
+}
+
+export interface WaitlistSubmissionPayload {
+  slug_evento: string;
+  nome: string;
+  whatsapp: string;
+  email?: string;
+  local?: string;
+  aluno_ganhador?: string;
+  motivo?: string;
+  observacoes?: string;
+}
+
+export interface WaitlistSuccessResult {
+  id_lead: string;
+  id_oportunidade_crm: string;
+  evento_nome: string;
+  mensagem: string;
 }
 
 export interface GasApiPayload {

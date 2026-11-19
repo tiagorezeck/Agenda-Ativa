@@ -21,10 +21,21 @@ import {
   PerfilUsuario,
   SlotDisponibilidade,
   EstagioCrm,
-  StatusClienteLead
+  StatusClienteLead,
+  MotivoIndisponivelEvento
 } from '../types/database';
-import { BookingSubmissionPayload, BookingSuccessResult } from '../types/api';
-import { gerarCodigoAleatorio, normalizarWhatsApp, obterDiaSemanaAbrev } from '../utils/formatters';
+import {
+  BookingSubmissionPayload,
+  BookingSuccessResult,
+  WaitlistSubmissionPayload,
+  WaitlistSuccessResult
+} from '../types/api';
+import {
+  DIAS_SEMANA_MAP,
+  gerarCodigoAleatorio,
+  normalizarWhatsApp,
+  obterDiaSemanaAbrev
+} from '../utils/formatters';
 import {
   executeDriveRequest,
   fetchFromGoogleDrive,
@@ -917,6 +928,215 @@ class StorageService {
     });
   }
 
+  public getDefaultMensagemIndisponivel(motivo?: MotivoIndisponivelEvento): string {
+    switch (motivo) {
+      case 'ENCERRADO':
+        return 'Este evento já foi finalizado. Deixe seu contato abaixo para ser avisado pela nossa equipe assim que abrirmos uma nova edição.';
+      case 'SEM_VAGAS':
+        return 'Todas as vagas disponíveis foram preenchidas! Entre na lista de espera para que nossa equipe avise você caso surjam desistências ou novas turmas.';
+      case 'AGENDA_FECHADA':
+      default:
+        return 'A agenda deste evento está temporariamente pausada. Cadastre seus dados na lista de espera para nossa equipe entrar em contato assim que a agenda reabrir.';
+    }
+  }
+
+  public getEventoProximasDatas(evento: EventoEntity): { dataIso: string; diaSemana: string; rotulo: string }[] {
+    const toLocalIsoDate = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    const list: { dataIso: string; diaSemana: string; rotulo: string }[] = [];
+    const hoje = new Date();
+    hoje.setHours(0, 0, 0, 0);
+    const hojeIso = toLocalIsoDate(hoje);
+    const amanha = new Date(hoje);
+    amanha.setDate(hoje.getDate() + 1);
+    const amanhaIso = toLocalIsoDate(amanha);
+
+    const modo = evento.modo_datas || (evento.recorrencia_ativa ? 'TOTAL' : 'SEMANAL');
+    const diasPermitidos =
+      Array.isArray(evento.dias_semana) && evento.dias_semana.length > 0
+        ? evento.dias_semana
+        : ['SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB', 'DOM'];
+
+    const baseDateStr = evento.data_inicio || hojeIso;
+    const baseDate = new Date(baseDateStr + 'T00:00:00');
+
+    if (modo === 'DATAS_ESPECIFICAS') {
+      const especificas = Array.isArray(evento.datas_especificas)
+        ? [...evento.datas_especificas].filter((iso) => iso >= hojeIso).sort()
+        : [];
+      for (const iso of especificas) {
+        const abrev = obterDiaSemanaAbrev(iso);
+        let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+        if (iso === hojeIso) rotulo = 'Hoje';
+        else if (iso === amanhaIso) rotulo = 'Amanhã';
+        list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+      }
+      return list;
+    }
+
+    if (modo === 'SEMANAL') {
+      const dayOfWeek = baseDate.getDay();
+      const diffToMon = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+      const monday = new Date(baseDate);
+      monday.setDate(baseDate.getDate() + diffToMon);
+
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
+        const iso = toLocalIsoDate(d);
+        if (iso < hojeIso) continue;
+        const abrev = obterDiaSemanaAbrev(iso);
+        if (!diasPermitidos.includes(abrev)) continue;
+
+        let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+        if (iso === hojeIso) rotulo = 'Hoje';
+        else if (iso === amanhaIso) rotulo = 'Amanhã';
+
+        list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+      }
+      return list;
+    }
+
+    if (modo === 'MENSAL') {
+      const year = baseDate.getFullYear();
+      const month = baseDate.getMonth();
+      const firstDay = new Date(year, month, 1);
+      const lastDay = new Date(year, month + 1, 0);
+
+      const curr = new Date(firstDay);
+      while (curr <= lastDay && list.length < 35) {
+        const iso = toLocalIsoDate(curr);
+        if (iso >= hojeIso) {
+          const abrev = obterDiaSemanaAbrev(iso);
+          if (diasPermitidos.includes(abrev)) {
+            let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+            if (iso === hojeIso) rotulo = 'Hoje';
+            else if (iso === amanhaIso) rotulo = 'Amanhã';
+            list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+          }
+        }
+        curr.setDate(curr.getDate() + 1);
+      }
+      return list;
+    }
+
+    const inicioStr = evento.data_inicio && evento.data_inicio > hojeIso ? evento.data_inicio : hojeIso;
+    const isPer = modo === 'PERIODO';
+    const fimStr = isPer ? evento.data_fim || '' : '';
+
+    for (let i = 0; i < 120; i++) {
+      const d = new Date(hoje);
+      d.setDate(hoje.getDate() + i);
+      const iso = toLocalIsoDate(d);
+
+      if (iso < inicioStr) continue;
+      if (fimStr && iso > fimStr) break;
+
+      const abrev = obterDiaSemanaAbrev(iso);
+      if (!diasPermitidos.includes(abrev)) continue;
+
+      let rotulo = DIAS_SEMANA_MAP[abrev] || abrev;
+      if (iso === hojeIso) rotulo = 'Hoje';
+      else if (iso === amanhaIso) rotulo = 'Amanhã';
+
+      list.push({ dataIso: iso, diaSemana: abrev, rotulo });
+      if (list.length >= 28) break;
+    }
+    return list;
+  }
+
+  public getEventoDisponibilidadeResumo(evento: EventoEntity): {
+    estado: 'DISPONIVEL' | 'ESGOTADO' | 'AGENDA_FECHADA' | 'ENCERRADO';
+    disponivel: boolean;
+    vagasTotais: number;
+    datasComVaga: number;
+    proximasDatas: { dataIso: string; diaSemana: string; rotulo: string }[];
+    tituloStatus: string;
+    mensagem: string;
+    permitirListaEspera: boolean;
+  } {
+    const proximasDatas = this.getEventoProximasDatas(evento);
+    let vagasTotais = 0;
+    let datasComVaga = 0;
+
+    for (const d of proximasDatas) {
+      const slots = this.getDisponibilidade(evento.id_evento, d.dataIso);
+      const vagasDia = slots.reduce((acc, s) => acc + (s.disponivel ? s.vagas_restantes : 0), 0);
+      if (vagasDia > 0) {
+        datasComVaga += 1;
+        vagasTotais += vagasDia;
+      }
+    }
+
+    const permitirListaEspera = evento.permitir_lista_espera !== false;
+    const msgCustom = (evento.mensagem_indisponivel || '').trim();
+
+    if (evento.status === 'ENCERRADO' || (evento.agenda_publica_ativa === false && evento.motivo_indisponivel === 'ENCERRADO')) {
+      return {
+        estado: 'ENCERRADO',
+        disponivel: false,
+        vagasTotais,
+        datasComVaga,
+        proximasDatas,
+        tituloStatus: 'Evento Finalizado',
+        mensagem: msgCustom || this.getDefaultMensagemIndisponivel('ENCERRADO'),
+        permitirListaEspera
+      };
+    }
+
+    if (evento.status !== 'PUBLICADO' || evento.agenda_publica_ativa === false) {
+      const estado =
+        evento.motivo_indisponivel === 'SEM_VAGAS' ? 'ESGOTADO' : 'AGENDA_FECHADA';
+      const tituloStatus =
+        estado === 'ESGOTADO' ? 'Vagas Esgotadas' : 'Agenda Fechada Temporariamente';
+      return {
+        estado,
+        disponivel: false,
+        vagasTotais,
+        datasComVaga,
+        proximasDatas,
+        tituloStatus,
+        mensagem:
+          msgCustom ||
+          this.getDefaultMensagemIndisponivel(evento.motivo_indisponivel || 'AGENDA_FECHADA'),
+        permitirListaEspera
+      };
+    }
+
+    if (vagasTotais <= 0) {
+      return {
+        estado: 'ESGOTADO',
+        disponivel: false,
+        vagasTotais: 0,
+        datasComVaga: 0,
+        proximasDatas,
+        tituloStatus: proximasDatas.length === 0 ? 'Aguardando Novas Datas' : 'Vagas Esgotadas',
+        mensagem:
+          msgCustom ||
+          this.getDefaultMensagemIndisponivel(
+            proximasDatas.length === 0 ? 'AGENDA_FECHADA' : 'SEM_VAGAS'
+          ),
+        permitirListaEspera
+      };
+    }
+
+    return {
+      estado: 'DISPONIVEL',
+      disponivel: true,
+      vagasTotais,
+      datasComVaga,
+      proximasDatas,
+      tituloStatus: 'Inscrições Abertas',
+      mensagem: '',
+      permitirListaEspera
+    };
+  }
+
   // --- Validação Atômica e Criação de Agendamento (Anti-Overbooking) ---
   public createBooking(payload: BookingSubmissionPayload, skipSaveSync: boolean = false): BookingSuccessResult {
     const evento = this.db.eventos.find(
@@ -927,8 +1147,8 @@ class StorageService {
       throw new Error('Evento não encontrado.');
     }
 
-    if (evento.status !== 'PUBLICADO') {
-      throw new Error('Este evento não está aberto para novos agendamentos no momento.');
+    if (evento.status !== 'PUBLICADO' || evento.agenda_publica_ativa === false) {
+      throw new Error(evento.mensagem_indisponivel || 'Este evento não está aberto para novos agendamentos no momento.');
     }
 
     // Identificar capacidade do slot
@@ -1393,6 +1613,175 @@ class StorageService {
 
     this.log('INFO', 'EVENT_SAVED', `Evento ${evento.nome} (${evento.id_evento}) salvo.`);
     this.salvar(this.db);
+  }
+
+  public updateEventoPublicConfig(
+    idEvento: string,
+    updates: Partial<
+      Pick<
+        EventoEntity,
+        'status' | 'agenda_publica_ativa' | 'motivo_indisponivel' | 'mensagem_indisponivel' | 'permitir_lista_espera'
+      >
+    >
+  ): EventoEntity | null {
+    const idx = this.db.eventos.findIndex((e) => e.id_evento === idEvento);
+    if (idx < 0) return null;
+
+    const current = this.db.eventos[idx];
+    const nowIso = new Date().toISOString();
+    const updated: EventoEntity = {
+      ...current,
+      ...updates,
+      atualizado_em: nowIso
+    };
+    this.db.eventos[idx] = updated;
+    this.log('INFO', 'EVENT_PUBLIC_CONFIG_UPDATED', `Configuração pública de "${updated.nome}" atualizada.`);
+    this.salvar(this.db);
+    return updated;
+  }
+
+  public createWaitlistLead(payload: WaitlistSubmissionPayload, skipSaveSync: boolean = false): WaitlistSuccessResult {
+    const normSlug = (payload.slug_evento || '').trim().toLowerCase();
+    const evento = this.db.eventos.find(
+      (e) =>
+        normSlug &&
+        (e.slug.toLowerCase() === normSlug || e.id_evento.toLowerCase() === normSlug)
+    );
+
+    if (!evento) {
+      throw new Error('Evento não encontrado para cadastro na lista de espera.');
+    }
+
+    const nowIso = new Date().toISOString();
+    const whatsappNorm = normalizarWhatsApp(payload.whatsapp);
+    const emailNorm = (payload.email || '').trim().toLowerCase();
+    const localNorm = (payload.local || '').trim();
+    const obsTxt = (payload.observacoes || '').trim();
+    const motivoRegistro = `[Lista de Espera - ${evento.nome}]${payload.motivo ? ` (${payload.motivo})` : ''}${obsTxt ? ` ${obsTxt}` : ''}`;
+
+    let lead = this.db.leads.find(
+      (l) =>
+        !l.excluido &&
+        ((whatsappNorm && normalizarWhatsApp(l.whatsapp) === whatsappNorm) ||
+          (emailNorm && (l.email || '').trim().toLowerCase() === emailNorm))
+    );
+
+    let idLead = '';
+    if (lead) {
+      idLead = lead.id_lead;
+      lead.nome = payload.nome.trim() || lead.nome;
+      if (localNorm) lead.local = localNorm;
+      if (emailNorm && !lead.email) lead.email = emailNorm;
+      lead.observacoes = lead.observacoes ? `${lead.observacoes}\n${motivoRegistro}` : motivoRegistro;
+      lead.atualizado_em = nowIso;
+    } else {
+      idLead = `LED-${gerarCodigoAleatorio(6)}`;
+      const novoLead: LeadEntity = {
+        id_lead: idLead,
+        nome: payload.nome.trim(),
+        whatsapp: whatsappNorm,
+        email: emailNorm,
+        local: localNorm || undefined,
+        status_cliente: 'LEAD',
+        origem_primeiro_evento: evento.id_evento,
+        total_agendamentos: 0,
+        data_ultimo_agendamento: nowIso,
+        responsavel_id: evento.responsavel_id || 'USR-001',
+        observacoes: motivoRegistro,
+        criado_em: nowIso,
+        atualizado_em: nowIso
+      };
+      this.db.leads.unshift(novoLead);
+    }
+
+    const idOportunidade = `CRM-${gerarCodigoAleatorio(6)}`;
+    const valorMensal = Number(evento.produto_valor_mensal) || 0;
+    const parcelas = Math.max(1, Number(evento.produto_parcelas) || 1);
+    const valorProduto = Number(evento.produto_valor) || (valorMensal > 0 ? valorMensal * parcelas : 0);
+    const nomeProduto = (evento.produto_nome || '').trim();
+
+    this.db.crm.unshift({
+      id_oportunidade: idOportunidade,
+      id_lead: idLead,
+      titulo: payload.nome.trim(),
+      produto_nome: nomeProduto || evento.nome,
+      produto_valor_mensal: valorMensal > 0 ? valorMensal : undefined,
+      produto_parcelas: valorMensal > 0 ? parcelas : undefined,
+      estagio: 'FOLLOW_UP_STAND_BY',
+      sub_status: 'FOLLOW',
+      valor_estimado: valorProduto,
+      valor_fechado: 0,
+      responsavel_id: evento.responsavel_id || 'USR-001',
+      data_proximo_followup: nowIso.slice(0, 10),
+      ordem_coluna: 1,
+      criado_em: nowIso,
+      atualizado_em: nowIso
+    });
+
+    this.db.historico_crm.unshift({
+      id_historico: `HCRM-${gerarCodigoAleatorio(6)}`,
+      id_oportunidade: idOportunidade,
+      tipo: 'MUDANCA_ESTAGIO',
+      estagio_novo: 'FOLLOW_UP_STAND_BY',
+      descricao: `Lead cadastrado na lista de espera do evento "${evento.nome}" para contato quando a agenda reabrir.${obsTxt ? ` Obs: ${obsTxt}` : ''}`,
+      usuario_id: 'SISTEMA',
+      criado_em: nowIso
+    });
+
+    this.adicionarNotificacao(
+      'LEAD',
+      'Novo Interessado na Lista de Espera',
+      `${payload.nome.trim()} solicitou aviso para quando a agenda do evento "${evento.nome}" reabrir.`
+    );
+
+    this.log('INFO', 'WAITLIST_REGISTERED', `${payload.nome.trim()} entrou na lista de espera de ${evento.nome}`);
+    this.salvar(this.db, skipSaveSync);
+
+    return {
+      id_lead: idLead,
+      id_oportunidade_crm: idOportunidade,
+      evento_nome: evento.nome,
+      mensagem: `Cadastro realizado! Nossa equipe entrará em contato assim que a agenda de "${evento.nome}" estiver disponível.`
+    };
+  }
+
+  public async createWaitlistWithCloud(payload: WaitlistSubmissionPayload): Promise<WaitlistSuccessResult> {
+    const cfg = getDriveConfig();
+    if (!isCloudActive()) {
+      return this.createWaitlistLead(payload);
+    }
+
+    try {
+      const res = await executeDriveRequest<{
+        status?: string;
+        waitlist?: boolean;
+        data?: WaitlistSuccessResult;
+        database?: SheetDatabase;
+      }>({
+        targetUrl: cfg.webappUrl || undefined,
+        action: 'REGISTER_WAITLIST',
+        data: payload,
+        apiToken: cfg.apiToken
+      });
+
+      if (res?.waitlist && res.data) {
+        if (res.database && Array.isArray(res.database.eventos)) {
+          this.replaceDatabase(res.database);
+        } else {
+          try {
+            this.createWaitlistLead(payload, true);
+          } catch {
+            // já gravado na nuvem
+          }
+        }
+        saveDriveConfig({ syncStatus: 'synced', lastSyncTimestamp: Date.now() });
+        return res.data;
+      }
+    } catch (err) {
+      console.warn('Falha ao acionar REGISTER_WAITLIST na nuvem, realizando gravação e sync padrão:', err);
+    }
+
+    return this.createWaitlistLead(payload);
   }
 
   public deleteEvento(idEvento: string) {

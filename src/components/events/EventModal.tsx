@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { EventoEntity, HorarioEntity, CampoFormularioEntity, ModoDatasEvento } from '../../types/database';
+import { EventoEntity, HorarioEntity, CampoFormularioEntity, ModoDatasEvento, MotivoIndisponivelEvento } from '../../types/database';
 import { storage } from '../../services/storageService';
-import { X, Plus, Trash2, Clock, Calendar, Check, Image as ImageIcon, Tag, Repeat, CalendarDays, MapPin } from 'lucide-react';
+import { X, Plus, Trash2, Clock, Calendar, Check, Image as ImageIcon, Tag, Repeat, CalendarDays, MapPin, Globe } from 'lucide-react';
 import { gerarCodigoAleatorio, formatarDataBR, formatarMoedaBRL, obterDiaSemanaAbrev, DIAS_SEMANA_MAP } from '../../utils/formatters';
 import { compressImageFileToDataUrl } from '../../utils/imageCompressor';
 
@@ -84,6 +84,19 @@ export const EventModal: React.FC<EventModalProps> = ({
   const [capacidadePadrao, setCapacidadePadrao] = useState(eventoParaEditar?.capacidade_padrao || 5);
   const [responsavelId, setResponsavelId] = useState(eventoParaEditar?.responsavel_id || 'USR-001');
   const [status, setStatus] = useState(eventoParaEditar?.status || 'PUBLICADO');
+  const [agendaPublicaAtiva, setAgendaPublicaAtiva] = useState<boolean>(
+    eventoParaEditar?.agenda_publica_ativa !== false && eventoParaEditar?.status !== 'PAUSADO' && eventoParaEditar?.status !== 'ENCERRADO'
+  );
+  const [motivoIndisponivel, setMotivoIndisponivel] = useState<MotivoIndisponivelEvento>(
+    eventoParaEditar?.motivo_indisponivel ||
+      (eventoParaEditar?.status === 'ENCERRADO' ? 'ENCERRADO' : 'AGENDA_FECHADA')
+  );
+  const [mensagemIndisponivel, setMensagemIndisponivel] = useState<string>(
+    eventoParaEditar?.mensagem_indisponivel || ''
+  );
+  const [permitirListaEspera, setPermitirListaEspera] = useState<boolean>(
+    eventoParaEditar?.permitir_lista_espera !== false
+  );
   const [mensagemConfirmacao, setMensagemConfirmacao] = useState(
     eventoParaEditar?.mensagem_confirmacao || 'Seu agendamento foi confirmado com sucesso! Entraremos em contato para orientações.'
   );
@@ -203,9 +216,14 @@ export const EventModal: React.FC<EventModalProps> = ({
       capacidade_padrao: Number(capacidadePadrao) || 5,
       responsavel_id: responsavelId,
       status: status as any,
+      agenda_publica_ativa: status === 'PUBLICADO' ? agendaPublicaAtiva : false,
+      motivo_indisponivel: motivoIndisponivel,
+      mensagem_indisponivel: mensagemIndisponivel.trim() || undefined,
+      permitir_lista_espera: permitirListaEspera,
       mensagem_confirmacao: mensagemConfirmacao.trim(),
       permite_cancelamento: permiteCancelamento,
       horas_antecedencia_cancelamento: Number(horasAntecedencia) || 24,
+      visitas: eventoParaEditar?.visitas || 0,
       criado_em: eventoParaEditar?.criado_em || new Date().toISOString(),
       atualizado_em: new Date().toISOString()
     };
@@ -422,12 +440,26 @@ export const EventModal: React.FC<EventModalProps> = ({
                 </label>
                 <select
                   value={status}
-                  onChange={(e) => setStatus(e.target.value as any)}
+                  onChange={(e) => {
+                    const nextStatus = e.target.value as EventoEntity['status'];
+                    setStatus(nextStatus);
+                    if (nextStatus === 'PUBLICADO') {
+                      setAgendaPublicaAtiva(true);
+                    } else if (nextStatus === 'ENCERRADO') {
+                      setAgendaPublicaAtiva(false);
+                      setMotivoIndisponivel('ENCERRADO');
+                    } else if (nextStatus === 'PAUSADO') {
+                      setAgendaPublicaAtiva(false);
+                      setMotivoIndisponivel('AGENDA_FECHADA');
+                    } else {
+                      setAgendaPublicaAtiva(false);
+                    }
+                  }}
                   className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-sm text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
                 >
                   <option value="PUBLICADO">Publicado (Aberto)</option>
-                  <option value="PAUSADO">Pausado</option>
-                  <option value="ENCERRADO">Encerrado</option>
+                  <option value="PAUSADO">Pausado (Agenda Fechada)</option>
+                  <option value="ENCERRADO">Encerrado (Finalizado)</option>
                   <option value="RASCUNHO">Rascunho</option>
                 </select>
               </div>
@@ -1000,6 +1032,76 @@ export const EventModal: React.FC<EventModalProps> = ({
                   <span>horas de antecedência</span>
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* Página Pública, Mensagem de Indisponibilidade & Lista de Espera */}
+          <div className="space-y-4 pt-4 border-t border-neutral-200 dark:border-neutral-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4 text-orange-500" />
+                <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                  Página Pública &amp; Lista de Espera
+                </h4>
+              </div>
+              <label className="flex items-center gap-2 text-xs font-semibold text-neutral-800 dark:text-neutral-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agendaPublicaAtiva && status === 'PUBLICADO'}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setAgendaPublicaAtiva(checked);
+                    if (checked && status !== 'PUBLICADO') {
+                      setStatus('PUBLICADO');
+                    }
+                  }}
+                  className="rounded bg-neutral-100 dark:bg-neutral-950 border-neutral-300 dark:border-neutral-700 text-orange-600 focus:ring-0"
+                />
+                <span>Agendamentos abertos na Landing Page</span>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                  Motivo / Aviso quando indisponível ou sem vagas
+                </label>
+                <select
+                  value={motivoIndisponivel}
+                  onChange={(e) => setMotivoIndisponivel(e.target.value as MotivoIndisponivelEvento)}
+                  className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+                >
+                  <option value="AGENDA_FECHADA">Agenda Fechada (Aguardando reabertura)</option>
+                  <option value="ENCERRADO">Evento Finalizado / Encerrado</option>
+                  <option value="SEM_VAGAS">Acabaram as Vagas (Turma Lotada)</option>
+                  <option value="PERSONALIZADO">Mensagem Personalizada</option>
+                </select>
+              </div>
+
+              <div className="flex items-end pb-1.5">
+                <label className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={permitirListaEspera}
+                    onChange={(e) => setPermitirListaEspera(e.target.checked)}
+                    className="rounded bg-neutral-100 dark:bg-neutral-950 border-neutral-300 dark:border-neutral-700 text-orange-600 focus:ring-0"
+                  />
+                  <span>Permitir cadastro na lista de espera (avise-me quando abrir)</span>
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                Mensagem exibida ao visitante quando o evento estiver indisponível
+              </label>
+              <textarea
+                rows={2}
+                value={mensagemIndisponivel}
+                onChange={(e) => setMensagemIndisponivel(e.target.value)}
+                placeholder={storage.getDefaultMensagemIndisponivel(motivoIndisponivel)}
+                className="w-full px-3 py-2 bg-neutral-50 dark:bg-neutral-950 border border-neutral-300 dark:border-neutral-700 rounded-lg text-xs text-neutral-900 dark:text-white focus:outline-none focus:border-orange-500"
+              />
             </div>
           </div>
 

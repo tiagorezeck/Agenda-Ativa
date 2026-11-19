@@ -56,6 +56,8 @@ export interface NotificacaoEntity {
 
 export type StatusEvento = 'PUBLICADO' | 'PAUSADO' | 'ENCERRADO' | 'RASCUNHO';
 
+export type MotivoIndisponivelEvento = 'AGENDA_FECHADA' | 'ENCERRADO' | 'SEM_VAGAS' | 'PERSONALIZADO';
+
 export type ModoDatasEvento = 'SEMANAL' | 'MENSAL' | 'TOTAL' | 'DATAS_ESPECIFICAS' | 'RECORRENTE' | 'PERIODO';
 
 export interface EventoEntity {
@@ -83,6 +85,10 @@ export interface EventoEntity {
   capacidade_padrao: number; // ex: 5
   responsavel_id: string; // FK -> Usuario
   status: StatusEvento;
+  agenda_publica_ativa?: boolean; // Controla se aceita agendamentos na página pública / Links & QR
+  motivo_indisponivel?: MotivoIndisponivelEvento; // Preset do motivo quando fechado/indisponível
+  mensagem_indisponivel?: string; // Mensagem exibida ao lead quando evento fechado/encerrado/sem vagas
+  permitir_lista_espera?: boolean; // Permite que o lead se cadastre para ser avisado quando abrir
   mensagem_confirmacao: string;
   permite_cancelamento: boolean;
   horas_antecedencia_cancelamento: number;
